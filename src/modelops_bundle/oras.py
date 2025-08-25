@@ -60,7 +60,7 @@ class OrasAdapter:
             abs_path = ctx.root / file_info.path
             if not abs_path.exists():
                 raise FileNotFoundError(f"File not found: {file_info.path}")
-            file_refs.append(file_info.path)  # Pass relative path to ORAS
+            file_refs.append(str(file_info.path))  # Pass relative path as string to ORAS
         
         # HACK: Work around oras-py basename issue
         # Create temp annotation file to preserve full paths in layer titles
@@ -170,6 +170,18 @@ class OrasAdapter:
             manifest_digest=manifest_digest,
             files=files
         )
+    
+    def list_tags(
+        self,
+        registry_ref: str
+    ) -> List[str]:
+        """List all tags for a repository.
+        
+        Returns list of tag names.
+        """
+        # The oras-py Registry client has a get_tags method
+        tags = self.client.get_tags(registry_ref)
+        return list(tags) if tags else []
 
 
 # ============= Utilities =============

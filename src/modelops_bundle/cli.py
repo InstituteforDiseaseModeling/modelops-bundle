@@ -32,6 +32,10 @@ from .oras import OrasAdapter
 app = typer.Typer(help="ModelOps Bundle - OCI artifact-based model synchronization")
 console = Console()
 
+# Create manifest command group
+manifest_app = typer.Typer(help="Inspect and manage registry manifests")
+app.add_typer(manifest_app, name="manifest")
+
 
 @app.command()
 def init(
@@ -39,14 +43,10 @@ def init(
     tag: str = typer.Option("latest", help="Default tag"),
 ):
     """Initialize a new bundle in the current directory."""
-    # Check if already initialized
-    try:
-        ctx = ProjectContext()
-        console.print("[red]✗[/red] Already initialized")
+    # Check if already initialized in current directory
+    if ProjectContext.is_initialized():
+        console.print("[red]✗[/red] Already initialized in current directory")
         raise typer.Exit(1)
-    except ValueError:
-        # Not initialized, proceed
-        pass
     
     # Initialize project context
     ctx = ProjectContext.init()
@@ -88,8 +88,9 @@ def add(
     # Add files
     added = []
     for file in files:
-        abs_file = ctx.absolute(file) if not file.is_absolute() else file
-        if not abs_file.exists():
+        # Check if file exists (handles both absolute and relative paths)
+        file_path = Path(file)
+        if not file_path.exists():
             console.print(f"[red]✗[/red] File not found: {file}")
             continue
         # Store as project-relative path
@@ -112,6 +113,7 @@ def add(
 @app.command()
 def remove(
     files: List[Path] = typer.Argument(..., help="Files to untrack"),
+    rm: bool = typer.Option(False, "--rm", help="Also delete the files from disk"),
 ):
     """Remove files from tracking."""
     try:
@@ -125,6 +127,7 @@ def remove(
     
     # Remove files
     removed = []
+    deleted = []
     for file in files:
         # Convert to project-relative path
         try:
@@ -132,6 +135,13 @@ def remove(
             if str(rel_path) in tracked.files:
                 tracked.remove(rel_path)
                 removed.append(rel_path)
+                
+                # Delete file if --rm flag is set
+                if rm:
+                    abs_path = ctx.absolute(rel_path)
+                    if abs_path.exists():
+                        abs_path.unlink()
+                        deleted.append(rel_path)
         except ValueError:
             # File outside project
             pass
@@ -141,9 +151,19 @@ def remove(
     
     # Display results
     if removed:
-        console.print(f"[green]✓[/green] Untracked {len(removed)} files:")
-        for file in removed:
-            console.print(f"  [red]-[/red] {file}")
+        if rm and deleted:
+            console.print(f"[green]✓[/green] Untracked and deleted {len(deleted)} files:")
+            for file in deleted:
+                console.print(f"  [red]✗[/red] {file} (deleted)")
+            # Show files that were untracked but not deleted (didn't exist)
+            not_deleted = set(removed) - set(deleted)
+            if not_deleted:
+                for file in not_deleted:
+                    console.print(f"  [red]-[/red] {file} (untracked, file didn't exist)")
+        else:
+            console.print(f"[green]✓[/green] Untracked {len(removed)} files:")
+            for file in removed:
+                console.print(f"  [red]-[/red] {file}")
 
 
 @app.command()
@@ -222,7 +242,6 @@ def status():
 def push(
     tag: Optional[str] = typer.Option(None, help="Tag to push"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be pushed"),
-    yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation"),
 ):
     """Push tracked files to registry."""
     try:
@@ -289,11 +308,8 @@ def push(
         console.print("\n[green]✓[/green] Everything up to date")
         return
     
-    # Confirm
+    # No confirmation by default - push directly
     target = f"{config.registry_ref}:{tag or config.default_tag}"
-    if not yes:
-        if not typer.confirm(f"\nPush to {target}?"):
-            raise typer.Abort()
     
     # Execute push
     console.print("\n[bold]Pushing files...[/bold]")
@@ -310,7 +326,6 @@ def push(
 def pull(
     tag: Optional[str] = typer.Option(None, help="Tag to pull"),
     overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite local changes"),
-    yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation"),
 ):
     """Pull bundle from registry."""
     try:
@@ -364,12 +379,9 @@ def pull(
         console.print("\n[green]✓[/green] Everything up to date")
         return
     
-    # Confirm
-    if not yes:
-        if overwrite and plan.conflicts:
-            console.print("\n[red]Warning: This will overwrite local changes![/red]")
-        if not typer.confirm("\nContinue?"):
-            raise typer.Abort()
+    # Show warning if overwriting
+    if overwrite and plan.conflicts:
+        console.print("\n[red]Warning: Overwriting local changes![/red]")
     
     # Execute pull
     console.print("\n[bold]Pulling files...[/bold]")
@@ -381,6 +393,105 @@ def pull(
     except Exception as e:
         console.print(f"[red]✗[/red] Pull failed: {e}")
         raise typer.Exit(1)
+
+
+@manifest_app.command("list")
+def list_manifests():
+    """List all available tags in the registry."""
+    try:
+        ctx = ProjectContext()
+    except ValueError as e:
+        console.print(f"[red]✗[/red] {e}")
+        raise typer.Exit(1)
+    
+    try:
+        config = load_config(ctx)
+    except FileNotFoundError:
+        console.print("[red]✗[/red] Bundle not properly initialized")
+        raise typer.Exit(1)
+    
+    # Get tags from registry
+    adapter = OrasAdapter()
+    try:
+        tags = adapter.list_tags(config.registry_ref)
+    except Exception as e:
+        console.print(f"[red]✗[/red] Failed to list tags: {e}")
+        raise typer.Exit(1)
+    
+    if not tags:
+        console.print(f"[yellow]No tags found for {config.registry_ref}[/yellow]")
+        return
+    
+    # Display tags
+    console.print(f"\n[bold]Available tags for {config.registry_ref}:[/bold]")
+    for tag in sorted(tags):
+        if tag == config.default_tag:
+            console.print(f"  [green]• {tag}[/green] (default)")
+        else:
+            console.print(f"  • {tag}")
+    console.print(f"\n[dim]Use 'modelops-bundle manifest show --tag <tag>' to inspect a specific tag[/dim]")
+
+
+@manifest_app.command("show")
+def show_manifest(
+    tag: Optional[str] = typer.Option(None, help="Tag to inspect"),
+    full: bool = typer.Option(False, "--full", help="Show full digests"),
+):
+    """Show manifest details for a specific tag."""
+    try:
+        ctx = ProjectContext()
+    except ValueError as e:
+        console.print(f"[red]✗[/red] {e}")
+        raise typer.Exit(1)
+    
+    try:
+        config = load_config(ctx)
+    except FileNotFoundError:
+        console.print("[red]✗[/red] Bundle not properly initialized")
+        raise typer.Exit(1)
+    
+    # Get manifest from registry
+    adapter = OrasAdapter()
+    try:
+        manifest = adapter.get_manifest(config.registry_ref, tag or config.default_tag)
+        remote = adapter.get_remote_state(config.registry_ref, tag or config.default_tag)
+    except Exception as e:
+        console.print(f"[red]✗[/red] Failed to fetch manifest: {e}")
+        raise typer.Exit(1)
+    
+    # Display manifest info
+    console.print(f"\n[bold]Manifest for {config.registry_ref}:{tag or config.default_tag}[/bold]")
+    
+    # Manifest digest
+    digest = remote.manifest_digest
+    if not full and len(digest) > 20:
+        digest = digest[:20] + "..."
+    console.print(f"Digest: [cyan]{digest}[/cyan]")
+    
+    # Manifest annotations
+    if manifest.get("annotations"):
+        console.print("\n[bold]Annotations:[/bold]")
+        for key, value in manifest["annotations"].items():
+            console.print(f"  {key}: {value}")
+    
+    # Layers (files)
+    console.print(f"\n[bold]Files ({len(remote.files)}):[/bold]")
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Path")
+    table.add_column("Size", justify="right")
+    table.add_column("Digest")
+    
+    for path, file_info in sorted(remote.files.items()):
+        digest = file_info.digest
+        if not full and len(digest) > 20:
+            digest = digest[:20] + "..."
+        table.add_row(
+            path,
+            _humanize_size(file_info.size),
+            digest
+        )
+    
+    console.print(table)
 
 
 @app.command()

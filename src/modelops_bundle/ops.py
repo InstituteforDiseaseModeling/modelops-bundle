@@ -1,7 +1,7 @@
 """Core operations for modelops-bundle."""
 
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 import json
 import yaml
 
@@ -100,13 +100,40 @@ def save_state(state: SyncState, ctx: Optional[ProjectContext] = None) -> None:
 def compute_diff(
     local: WorkingTreeState,
     remote: RemoteState,
-    last_sync: SyncState
+    last_sync: SyncState,
+    missing_local: Optional[Set[str]] = None
 ) -> DiffResult:
     """Compute differences between local and remote states."""
     changes = []
+    missing_local = missing_local or set()
     
-    # Get all unique paths
-    all_paths = set(local.files.keys()) | set(remote.files.keys())
+    # Handle local deletions first
+    for path in missing_local:
+        last_digest = last_sync.last_synced_files.get(path)
+        remote_file = remote.files.get(path)
+        
+        if last_digest is None:
+            # Never synced - skip (file was added then deleted before sync)
+            continue
+            
+        if remote_file and remote_file.digest != last_digest:
+            # Remote changed since last sync, local deleted -> CONFLICT
+            change_type = ChangeType.CONFLICT
+        else:
+            # Remote unchanged or absent -> DELETED_LOCAL
+            change_type = ChangeType.DELETED_LOCAL
+            
+        changes.append(FileChange(
+            path=path,
+            change_type=change_type,
+            local=None,
+            remote=remote_file,
+            last_synced=last_digest
+        ))
+    
+    # Get paths that are present locally and/or remotely (excluding missing)
+    present_local = set(local.files.keys())
+    all_paths = (present_local | set(remote.files.keys())) - missing_local
     
     for path in all_paths:
         local_file = local.files.get(path)
@@ -130,7 +157,14 @@ def compute_diff(
         
         # Local only
         elif local_file and not remote_file:
-            change_type = ChangeType.ADDED_LOCAL
+            if last_digest:
+                # File was previously synced
+                if local_file.digest == last_digest:
+                    change_type = ChangeType.DELETED_REMOTE  # Unchanged locally, deleted remotely
+                else:
+                    change_type = ChangeType.CONFLICT  # Modified locally, deleted remotely
+            else:
+                change_type = ChangeType.ADDED_LOCAL  # Never synced, local only
         
         # Remote only
         elif remote_file and not local_file:
@@ -170,36 +204,43 @@ def push(
     adapter = OrasAdapter()
     try:
         remote = adapter.get_remote_state(config.registry_ref, tag or config.default_tag)
+        remote_exists = True
     except Exception:
-        # Registry might be empty
+        # Registry might be empty or tag doesn't exist
         remote = RemoteState(manifest_digest="", files={})
+        remote_exists = False
     
     # Load sync state
     state = load_state(ctx)
     
     # Compute diff
-    diff = compute_diff(working, remote, state)
+    # If pushing to a new tag (remote doesn't exist), don't use sync state for comparison
+    # as sync state is from default tag pushes
+    if not remote_exists:
+        # New tag - treat all files as needing upload
+        diff = compute_diff(working, remote, SyncState())  # Empty sync state
+    else:
+        # Existing tag - use sync state for optimization
+        diff = compute_diff(working, remote, state)
     
     # Create push plan
     plan = diff.to_push_plan()
     
-    if not plan.files_to_upload:
-        return remote.manifest_digest  # Nothing to push
+    if not plan.files_to_upload and remote_exists:
+        return remote.manifest_digest  # Nothing to push (only if remote exists)
     
-    # Execute push
+    # Execute push - pass ALL manifest files, not just changed ones!
+    # ORAS will create manifest with exactly these files
     manifest_digest = adapter.push_files(
         config.registry_ref,
-        plan.files_to_upload,
+        plan.manifest_files,  # CRITICAL: Full manifest, not just files_to_upload!
         tag or config.default_tag,
         config.artifact_type,
         ctx=ctx
     )
     
     # Update sync state
-    state.last_push_digest = manifest_digest
-    state.timestamp = _get_timestamp()
-    for file_info in plan.files_to_upload:
-        state.last_synced_files[file_info.path] = file_info.digest
+    state.update_after_push(manifest_digest, working)
     save_state(state, ctx)
     
     return manifest_digest
@@ -235,20 +276,26 @@ def pull(
     plan = diff.to_pull_plan(overwrite)
     
     if plan.conflicts and not overwrite:
-        # Don't execute if there are conflicts
-        return plan
+        # Don't execute if there are conflicts - require explicit --overwrite
+        raise ValueError(f"Pull would overwrite {len(plan.conflicts)} local changes. Use --overwrite to force.")
     
-    if not plan.files_to_download:
-        return plan  # Nothing to pull
+    if not plan.files_to_download and not plan.files_to_delete_local:
+        return plan  # Nothing to change
     
     # Execute pull
-    adapter.pull_files(config.registry_ref, tag or config.default_tag, ctx.root, ctx=ctx)
+    if plan.files_to_download:
+        adapter.pull_files(config.registry_ref, tag or config.default_tag, ctx.root, ctx=ctx)
+    
+    # Delete local files if requested (DELETED_REMOTE with overwrite=True)
+    for path in plan.files_to_delete_local:
+        file_path = ctx.root / path
+        if file_path.exists():
+            file_path.unlink()
+        # Remove from tracked files
+        tracked.remove([Path(path)])
     
     # Update sync state
-    state.last_pull_digest = remote.manifest_digest
-    state.timestamp = _get_timestamp()
-    for file_info in plan.files_to_download:
-        state.last_synced_files[file_info.path] = file_info.digest
+    state.update_after_pull(remote.manifest_digest, plan.files_to_download)
     save_state(state, ctx)
     
     # Update tracked files with new files from remote

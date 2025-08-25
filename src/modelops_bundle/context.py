@@ -16,6 +16,12 @@ class ProjectContext:
             raise ValueError(f"Not inside a modelops-bundle project (no {MODELOPS_BUNDLE_DIR} found)")
     
     @classmethod
+    def is_initialized(cls, path: Optional[Path] = None) -> bool:
+        """Check if a specific directory is initialized (without traversing up)."""
+        target = path or Path.cwd()
+        return (target / MODELOPS_BUNDLE_DIR).exists()
+    
+    @classmethod
     def init(cls, path: Optional[Path] = None) -> 'ProjectContext':
         """Initialize a new project at the given path."""
         target = path or Path.cwd()

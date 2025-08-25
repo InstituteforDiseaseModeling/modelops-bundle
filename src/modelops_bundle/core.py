@@ -48,6 +48,21 @@ class SyncState(BaseModel):
     last_pull_digest: Optional[str] = None
     last_synced_files: Dict[str, str] = Field(default_factory=dict)  # path -> digest
     timestamp: float = Field(default_factory=time.time)
+    
+    def update_after_push(self, manifest_digest: str, working_state: "WorkingTreeState") -> None:
+        """Update sync state after successful push."""
+        self.last_push_digest = manifest_digest
+        self.timestamp = time.time()
+        # Save ALL working tree digests, not just uploaded ones
+        for path, file_info in working_state.files.items():
+            self.last_synced_files[path] = file_info.digest
+    
+    def update_after_pull(self, manifest_digest: str, pulled_files: List["FileInfo"]) -> None:
+        """Update sync state after successful pull."""
+        self.last_pull_digest = manifest_digest
+        self.timestamp = time.time()
+        for file_info in pulled_files:
+            self.last_synced_files[file_info.path] = file_info.digest
 
 
 # ============= File Information =============
@@ -129,20 +144,27 @@ class DiffResult(BaseModel):
     
     def to_push_plan(self) -> "PushPlan":
         """Convert diff to push plan."""
-        to_upload = []
-        unchanged = []
+        manifest_files = []  # ALL files except DELETED_LOCAL
+        to_upload = []       # Only changed files
+        unchanged = []       # Unchanged paths for UI
+        deletes = []         # Deleted locally
         
         for change in self.changes:
-            if change.change_type in (ChangeType.ADDED_LOCAL, ChangeType.MODIFIED_LOCAL):
-                if change.local:
+            if change.change_type == ChangeType.DELETED_LOCAL:
+                deletes.append(change.path)
+            elif change.local:  # File exists locally
+                manifest_files.append(change.local)
+                if change.change_type in (ChangeType.ADDED_LOCAL, ChangeType.MODIFIED_LOCAL):
                     to_upload.append(change.local)
-            elif change.change_type == ChangeType.UNCHANGED:
-                unchanged.append(change.path)
+                elif change.change_type == ChangeType.UNCHANGED:
+                    unchanged.append(change.path)
         
         total_size = sum(f.size for f in to_upload)
         return PushPlan(
+            manifest_files=manifest_files,
             files_to_upload=to_upload,
             files_unchanged=unchanged,
+            deletes=deletes,
             total_upload_size=total_size
         )
     
@@ -151,11 +173,17 @@ class DiffResult(BaseModel):
         to_download = []
         to_skip = []
         conflicts = []
+        to_delete_local = []
         
         for change in self.changes:
             if change.change_type in (ChangeType.ADDED_REMOTE, ChangeType.MODIFIED_REMOTE):
                 if change.remote:
                     to_download.append(change.remote)
+            elif change.change_type == ChangeType.DELETED_REMOTE:
+                if overwrite:
+                    to_delete_local.append(change.path)
+                else:
+                    conflicts.append(change.path)  # Treat as conflict if not overwriting
             elif change.change_type == ChangeType.CONFLICT:
                 if overwrite and change.remote:
                     to_download.append(change.remote)
@@ -169,6 +197,7 @@ class DiffResult(BaseModel):
             files_to_download=to_download,
             files_to_skip=to_skip,
             conflicts=conflicts,
+            files_to_delete_local=to_delete_local,
             total_download_size=total_size
         )
 
@@ -178,13 +207,19 @@ class DiffResult(BaseModel):
 class PushPlan(BaseModel):
     """Plan for push operation."""
     
-    files_to_upload: List[FileInfo]
-    files_unchanged: List[str]
+    manifest_files: List[FileInfo]      # ALL files for manifest (excludes DELETED_LOCAL)
+    files_to_upload: List[FileInfo]     # Subset that changed (ADDED/MODIFIED_LOCAL)
+    files_unchanged: List[str]          # For UI reporting
+    deletes: List[str] = Field(default_factory=list)  # DELETED_LOCAL paths
     total_upload_size: int = 0
     
     def summary(self) -> str:
         """Get human-readable summary."""
-        return f"↑ {len(self.files_to_upload)} files to upload ({_humanize_size(self.total_upload_size)}), {len(self.files_unchanged)} unchanged"
+        parts = [f"↑ {len(self.files_to_upload)} files to upload ({_humanize_size(self.total_upload_size)})", 
+                 f"{len(self.files_unchanged)} unchanged"]
+        if self.deletes:
+            parts.append(f"{len(self.deletes)} to delete")
+        return ", ".join(parts)
 
 
 class PullPlan(BaseModel):
@@ -193,6 +228,7 @@ class PullPlan(BaseModel):
     files_to_download: List[FileInfo]
     files_to_skip: List[str]
     conflicts: List[str]
+    files_to_delete_local: List[str] = Field(default_factory=list)  # DELETED_REMOTE paths
     total_download_size: int = 0
     
     def summary(self) -> str:
@@ -202,6 +238,8 @@ class PullPlan(BaseModel):
             parts.append(f"⚠ {len(self.conflicts)} conflicts")
         if self.files_to_skip:
             parts.append(f"{len(self.files_to_skip)} skipped")
+        if self.files_to_delete_local:
+            parts.append(f"{len(self.files_to_delete_local)} to delete locally")
         return ", ".join(parts)
 
 

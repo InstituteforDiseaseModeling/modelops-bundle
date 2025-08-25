@@ -9,7 +9,7 @@ echo "🚀 Creating sample epidemiological model project: $PROJECT_NAME"
 
 # Use Python fixture as source of truth
 cd "$(dirname "$0")/.."
-python -m tests.fixtures.sample_project "$BASE_DIR" "$PROJECT_NAME"
+uv run python -m tests.fixtures.sample_project "$BASE_DIR" "$PROJECT_NAME"
 
 # Show what was created
 echo ""

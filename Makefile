@@ -4,7 +4,7 @@
 # testing, and Docker service management.
 
 .DEFAULT_GOAL := help
-.PHONY: help up down ps sample-project sample-project-named
+.PHONY: help up down reset-registry ps sample-project sample-project-named
 
 help: ## Show this help message
 	@echo 'modelops-bundle dev commands'
@@ -39,6 +39,12 @@ down: ## Stop development services
 	@echo "🛑 Stopping development services..."
 	docker-compose -f dev/docker-compose.yml down
 	@echo "✅ Services stopped"
+
+reset-registry: ## Reset the registry (removes all stored artifacts)
+	@echo "🔄 Resetting registry (this will delete all stored artifacts)..."
+	docker-compose -f dev/docker-compose.yml down -v
+	@echo "✅ Registry reset complete"
+	@echo "💡 Run 'make up' to start fresh services"
 
 ps: ## Show development service status
 	@echo "📋 Service Status:"

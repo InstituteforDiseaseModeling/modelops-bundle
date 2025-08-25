@@ -258,9 +258,8 @@ def test_full_workflow_with_cli_commands(sample_project, registry_ref, monkeypat
     assert result.returncode == 0
     assert "src/model.py" in result.stdout
     
-    # Push
-    monkeypatch.setenv("MODELOPS_YES", "true")  # Auto-confirm
-    result = run_cli("push", "--yes")
+    # Push (no confirmation needed anymore)
+    result = run_cli("push")
     assert result.returncode == 0
     assert "Pushed successfully" in result.stdout
     
