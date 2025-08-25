@@ -1,0 +1,16 @@
+[project]
+name = "modelops-bundle"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "oras>=0.2.37",
+    "pydantic>=2.11.7",
+    "rich>=14.1.0",
+    "typer>=0.16.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
