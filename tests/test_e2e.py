@@ -269,12 +269,3 @@ def test_full_workflow_with_cli_commands(sample_project, registry_ref, monkeypat
     # Should show files as unchanged if remote is accessible
 
 
-# Placeholder tracking for remaining work
-REMAINING_PLACEHOLDERS = """
-Remaining placeholders to implement:
-1. OrasAdapter.push_files() - Need to properly extract digest from response
-2. OrasAdapter.get_manifest() - Need to handle auth properly
-3. ops.py _generate_digest() - Compute real manifest digest
-4. CLI confirmation prompts - Need better testing approach
-5. Progress bars and rich output - Need to handle in tests
-"""

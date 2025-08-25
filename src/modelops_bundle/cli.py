@@ -32,9 +32,6 @@ from .oras import OrasAdapter
 app = typer.Typer(help="ModelOps Bundle - OCI artifact-based model synchronization")
 console = Console()
 
-# Create manifest command group
-manifest_app = typer.Typer(help="Inspect and manage registry manifests")
-app.add_typer(manifest_app, name="manifest")
 
 
 @app.command()
@@ -395,49 +392,13 @@ def pull(
         raise typer.Exit(1)
 
 
-@manifest_app.command("list")
-def list_manifests():
-    """List all available tags in the registry."""
-    try:
-        ctx = ProjectContext()
-    except ValueError as e:
-        console.print(f"[red]✗[/red] {e}")
-        raise typer.Exit(1)
-    
-    try:
-        config = load_config(ctx)
-    except FileNotFoundError:
-        console.print("[red]✗[/red] Bundle not properly initialized")
-        raise typer.Exit(1)
-    
-    # Get tags from registry
-    adapter = OrasAdapter()
-    try:
-        tags = adapter.list_tags(config.registry_ref)
-    except Exception as e:
-        console.print(f"[red]✗[/red] Failed to list tags: {e}")
-        raise typer.Exit(1)
-    
-    if not tags:
-        console.print(f"[yellow]No tags found for {config.registry_ref}[/yellow]")
-        return
-    
-    # Display tags
-    console.print(f"\n[bold]Available tags for {config.registry_ref}:[/bold]")
-    for tag in sorted(tags):
-        if tag == config.default_tag:
-            console.print(f"  [green]• {tag}[/green] (default)")
-        else:
-            console.print(f"  • {tag}")
-    console.print(f"\n[dim]Use 'modelops-bundle manifest show --tag <tag>' to inspect a specific tag[/dim]")
-
-
-@manifest_app.command("show")
-def show_manifest(
-    tag: Optional[str] = typer.Option(None, help="Tag to inspect"),
+@app.command()
+def manifest(
+    reference: Optional[str] = typer.Argument(None, help="Tag or digest to inspect"),
+    tags_only: bool = typer.Option(False, "--tags-only", help="List only tag names"),
     full: bool = typer.Option(False, "--full", help="Show full digests"),
 ):
-    """Show manifest details for a specific tag."""
+    """Inspect registry manifests and tags."""
     try:
         ctx = ProjectContext()
     except ValueError as e:
@@ -450,48 +411,118 @@ def show_manifest(
         console.print("[red]✗[/red] Bundle not properly initialized")
         raise typer.Exit(1)
     
-    # Get manifest from registry
     adapter = OrasAdapter()
-    try:
-        manifest = adapter.get_manifest(config.registry_ref, tag or config.default_tag)
-        remote = adapter.get_remote_state(config.registry_ref, tag or config.default_tag)
-    except Exception as e:
-        console.print(f"[red]✗[/red] Failed to fetch manifest: {e}")
-        raise typer.Exit(1)
     
-    # Display manifest info
-    console.print(f"\n[bold]Manifest for {config.registry_ref}:{tag or config.default_tag}[/bold]")
-    
-    # Manifest digest
-    digest = remote.manifest_digest
-    if not full and len(digest) > 20:
-        digest = digest[:20] + "..."
-    console.print(f"Digest: [cyan]{digest}[/cyan]")
-    
-    # Manifest annotations
-    if manifest.get("annotations"):
-        console.print("\n[bold]Annotations:[/bold]")
-        for key, value in manifest["annotations"].items():
-            console.print(f"  {key}: {value}")
-    
-    # Layers (files)
-    console.print(f"\n[bold]Files ({len(remote.files)}):[/bold]")
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Path")
-    table.add_column("Size", justify="right")
-    table.add_column("Digest")
-    
-    for path, file_info in sorted(remote.files.items()):
-        digest = file_info.digest
-        if not full and len(digest) > 20:
-            digest = digest[:20] + "..."
-        table.add_row(
-            path,
-            _humanize_size(file_info.size),
-            digest
-        )
-    
-    console.print(table)
+    # If a specific reference is provided, show its details
+    if reference:
+        try:
+            # Try to get manifest (works for both tags and digests)
+            manifest = adapter.get_manifest(config.registry_ref, reference)
+            remote = adapter.get_remote_state(config.registry_ref, reference)
+        except Exception as e:
+            console.print(f"[red]✗[/red] Failed to fetch manifest for '{reference}': {e}")
+            raise typer.Exit(1)
+        
+        # Display manifest info
+        console.print(f"\n[bold]Manifest for {config.registry_ref}:{reference}[/bold]")
+        
+        # Manifest digest
+        digest = remote.manifest_digest
+        if not full and digest.startswith("sha256:"):
+            # Show sha256:7chars format
+            digest = "sha256:" + digest[7:14]
+        console.print(f"Digest: [cyan]{digest}[/cyan]")
+        
+        # Manifest annotations
+        if manifest.get("annotations"):
+            console.print("\n[bold]Annotations:[/bold]")
+            for key, value in manifest["annotations"].items():
+                console.print(f"  {key}: {value}")
+        
+        # Layers (files)
+        console.print(f"\n[bold]Files ({len(remote.files)}):[/bold]")
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Path")
+        table.add_column("Size", justify="right")
+        table.add_column("Digest")
+        
+        for path, file_info in sorted(remote.files.items()):
+            file_digest = file_info.digest
+            if not full and file_digest.startswith("sha256:"):
+                # Show sha256:7chars format
+                file_digest = "sha256:" + file_digest[7:14]
+            table.add_row(
+                path,
+                _humanize_size(file_info.size),
+                file_digest
+            )
+        
+        console.print(table)
+    else:
+        # No reference provided - list all manifests or tags
+        try:
+            tags = adapter.list_tags(config.registry_ref)
+        except Exception as e:
+            console.print(f"[red]✗[/red] Failed to list tags: {e}")
+            raise typer.Exit(1)
+        
+        if not tags:
+            console.print(f"[yellow]No tags found for {config.registry_ref}[/yellow]")
+            return
+        
+        if tags_only:
+            # Simple tag list for scripting
+            for tag in sorted(tags):
+                console.print(tag)
+        else:
+            # Default: Group tags by manifest digest
+            manifest_groups = {}
+            tag_errors = []
+            
+            for tag in tags:
+                try:
+                    # Get manifest to find its digest
+                    remote = adapter.get_remote_state(config.registry_ref, tag)
+                    digest = remote.manifest_digest
+                    
+                    if digest not in manifest_groups:
+                        manifest_groups[digest] = {
+                            "tags": [],
+                            "files": len(remote.files),
+                            "size": sum(f.size for f in remote.files.values())
+                        }
+                    manifest_groups[digest]["tags"].append(tag)
+                except Exception as e:
+                    tag_errors.append((tag, str(e)))
+            
+            # Display grouped by manifest
+            console.print(f"\n[bold]Manifests for {config.registry_ref}:[/bold]\n")
+            
+            for digest, info in manifest_groups.items():
+                # Format tags with default marker
+                tag_list = []
+                for tag in sorted(info["tags"]):
+                    if tag == config.default_tag:
+                        tag_list.append(f"[green]{tag}[/green]")
+                    else:
+                        tag_list.append(tag)
+                
+                # Shorten digest for display (sha256:7chars)
+                if not full and digest.startswith("sha256:"):
+                    short_digest = "sha256:" + digest[7:14]
+                else:
+                    short_digest = digest
+                console.print(f"[cyan]{short_digest}[/cyan] ({', '.join(tag_list)})")
+                console.print(f"  Files: {info['files']} ({_humanize_size(info['size'])})")
+                console.print()
+            
+            if tag_errors:
+                console.print("[yellow]Warning: Some tags could not be fetched:[/yellow]")
+                for tag, error in tag_errors:
+                    console.print(f"  • {tag}: {error}")
+            
+            console.print("[dim]Use 'modelops-bundle manifest <tag>' to inspect a specific manifest[/dim]")
+            console.print("[dim]Use 'modelops-bundle manifest --tags-only' for a simple tag list[/dim]")
 
 
 @app.command()
