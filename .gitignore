@@ -11,3 +11,6 @@ wheels/
 
 # External documentation (cloned repos)
 docs/external/
+
+# ModelOps Bundle
+.modelops-bundle/
