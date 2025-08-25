@@ -18,8 +18,8 @@ from .core import (
     RemoteState,
     SyncState,
     TrackedFiles,
-    WorkingTreeState,
 )
+from .snapshot import TrackedFilesSnapshot
 from .oras import OrasAdapter
 
 
@@ -98,7 +98,7 @@ def save_state(state: SyncState, ctx: Optional[ProjectContext] = None) -> None:
 # ============= Diff Operations =============
 
 def compute_diff(
-    local: WorkingTreeState,
+    local: TrackedFilesSnapshot,
     remote: RemoteState,
     last_sync: SyncState,
     missing_local: Optional[Set[str]] = None
@@ -198,7 +198,7 @@ def push(
         ctx = ProjectContext()
     
     # Scan working tree
-    working = WorkingTreeState.scan(tracked.files, ctx.root)
+    working = TrackedFilesSnapshot.scan(tracked.files, ctx.root)
     
     # Get remote state
     adapter = OrasAdapter()
@@ -260,7 +260,7 @@ def pull(
         ctx = ProjectContext()
     
     # Scan working tree
-    working = WorkingTreeState.scan(tracked.files, ctx.root)
+    working = TrackedFilesSnapshot.scan(tracked.files, ctx.root)
     
     # Get remote state
     adapter = OrasAdapter()

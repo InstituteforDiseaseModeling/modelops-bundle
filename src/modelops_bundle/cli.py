@@ -13,9 +13,12 @@ from .context import ProjectContext
 from .core import (
     BundleConfig,
     ChangeType,
+    DiffResult,
+    FileChange,
     TrackedFiles,
-    WorkingTreeState,
 )
+from .snapshot import TrackedFilesSnapshot
+from .utils import humanize_size
 from .ops import (
     compute_diff,
     load_config,
@@ -189,7 +192,7 @@ def status():
         return
     
     # Scan working tree
-    working = WorkingTreeState.scan(tracked.files, ctx.root)
+    working = TrackedFilesSnapshot.scan(tracked.files, ctx.root)
     
     # Try to get remote state
     adapter = OrasAdapter()
@@ -223,7 +226,7 @@ def status():
                 table.add_row(
                     change.path,
                     status_map.get(change.change_type, str(change.change_type)),
-                    _humanize_size(file_info.size)
+                    humanize_size(file_info.size)
                 )
         
         console.print("\n", table)
@@ -231,7 +234,7 @@ def status():
         # Just show local files
         console.print("\n[bold]Local files:[/bold]")
         for path, file_info in working.files.items():
-            console.print(f"  {path} ({_humanize_size(file_info.size)})")
+            console.print(f"  {path} ({humanize_size(file_info.size)})")
         console.print("\n[yellow]Remote not accessible or empty[/yellow]")
 
 
@@ -259,7 +262,7 @@ def push(
         return
     
     # Scan working tree
-    working = WorkingTreeState.scan(tracked.files, ctx.root)
+    working = TrackedFilesSnapshot.scan(tracked.files, ctx.root)
     
     # Get remote state
     adapter = OrasAdapter()
@@ -274,7 +277,6 @@ def push(
         diff = compute_diff(working, remote, state)
     else:
         # No remote - all files are new
-        from .core import DiffResult, FileChange
         changes = [
             FileChange(
                 path=path,
@@ -295,7 +297,7 @@ def push(
     if plan.files_to_upload:
         console.print("\n[yellow]Changes to push:[/yellow]")
         for file in plan.files_to_upload:
-            console.print(f"  [green]↑[/green] {file.path} ({_humanize_size(file.size)})")
+            console.print(f"  [green]↑[/green] {file.path} ({humanize_size(file.size)})")
     
     if dry_run:
         console.print("\n[dim]Dry run - no changes made[/dim]")
@@ -347,7 +349,7 @@ def pull(
         raise typer.Exit(1)
     
     # Scan working tree
-    working = WorkingTreeState.scan(tracked.files, ctx.root)
+    working = TrackedFilesSnapshot.scan(tracked.files, ctx.root)
     
     # Compute diff
     state = load_state(ctx)
@@ -363,7 +365,7 @@ def pull(
     if plan.files_to_download:
         console.print("\n[yellow]Changes from remote:[/yellow]")
         for file in plan.files_to_download:
-            console.print(f"  [blue]↓[/blue] {file.path} ({_humanize_size(file.size)})")
+            console.print(f"  [blue]↓[/blue] {file.path} ({humanize_size(file.size)})")
     
     if plan.conflicts and not overwrite:
         console.print("\n[red]Conflicts (use --overwrite to force):[/red]")
@@ -453,7 +455,7 @@ def manifest(
                 file_digest = "sha256:" + file_digest[7:14]
             table.add_row(
                 path,
-                _humanize_size(file_info.size),
+                humanize_size(file_info.size),
                 file_digest
             )
         
@@ -513,7 +515,7 @@ def manifest(
                 else:
                     short_digest = digest
                 console.print(f"[cyan]{short_digest}[/cyan] ({', '.join(tag_list)})")
-                console.print(f"  Files: {info['files']} ({_humanize_size(info['size'])})")
+                console.print(f"  Files: {info['files']} ({humanize_size(info['size'])})")
                 console.print()
             
             if tag_errors:
@@ -548,7 +550,7 @@ def diff(
         return
     
     # Get states
-    working = WorkingTreeState.scan(tracked.files, ctx.root)
+    working = TrackedFilesSnapshot.scan(tracked.files, ctx.root)
     adapter = OrasAdapter()
     
     try:
@@ -592,15 +594,6 @@ def diff(
                 for change in changes:
                     console.print(f"  {icon} {change.path}")
         console.print()
-
-
-def _humanize_size(size: int) -> str:
-    """Convert bytes to human-readable format."""
-    for unit in ["B", "KB", "MB", "GB"]:
-        if size < 1024:
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} TB"
 
 
 def main():

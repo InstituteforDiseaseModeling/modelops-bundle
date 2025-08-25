@@ -9,8 +9,8 @@ from modelops_bundle.core import (
     BundleConfig,
     ChangeType,
     TrackedFiles,
-    WorkingTreeState,
 )
+from modelops_bundle.snapshot import TrackedFilesSnapshot
 from modelops_bundle.ops import (
     compute_diff,
     load_config,
@@ -82,7 +82,7 @@ class TestBundleWorkflow:
         tracked.add(Path("src/model.py"), Path("data/data.csv"))
         
         # Scan working tree
-        working = WorkingTreeState.scan(tracked.files)
+        working = TrackedFilesSnapshot.scan(tracked.files)
         
         assert len(working.files) == 2
         assert "src/model.py" in working.files
@@ -158,7 +158,7 @@ class TestBundleWorkflow:
         # Get initial state
         adapter = OrasAdapter()
         remote = adapter.get_remote_state(registry_ref)
-        working = WorkingTreeState.scan(tracked.files)
+        working = TrackedFilesSnapshot.scan(tracked.files)
         state = load_state()
         
         # Compute diff - should be unchanged
@@ -171,7 +171,7 @@ class TestBundleWorkflow:
         model_path.write_text(original_content + "\n# Modified")
         
         # Scan again
-        working = WorkingTreeState.scan(tracked.files)
+        working = TrackedFilesSnapshot.scan(tracked.files)
         
         # Compute diff - should show modification
         diff = compute_diff(working, remote, state)
@@ -214,7 +214,7 @@ class TestBundleWorkflow:
         model_path.write_text(original + "\n# Local change")
         
         # Get states
-        working = WorkingTreeState.scan(tracked.files)
+        working = TrackedFilesSnapshot.scan(tracked.files)
         adapter = OrasAdapter()
         remote = adapter.get_remote_state(registry_ref)
         

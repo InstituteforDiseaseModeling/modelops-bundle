@@ -2,11 +2,14 @@
 
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Set
-import hashlib
+from typing import Dict, List, Optional, Set, TYPE_CHECKING
 import time
 
 from pydantic import BaseModel, Field
+from .utils import humanize_size
+
+if TYPE_CHECKING:
+    from .snapshot import TrackedFilesSnapshot
 
 
 # ============= Configuration =============
@@ -49,12 +52,12 @@ class SyncState(BaseModel):
     last_synced_files: Dict[str, str] = Field(default_factory=dict)  # path -> digest
     timestamp: float = Field(default_factory=time.time)
     
-    def update_after_push(self, manifest_digest: str, working_state: "WorkingTreeState") -> None:
+    def update_after_push(self, manifest_digest: str, tracked_files: "TrackedFilesSnapshot") -> None:
         """Update sync state after successful push."""
         self.last_push_digest = manifest_digest
         self.timestamp = time.time()
         # Save ALL working tree digests, not just uploaded ones
-        for path, file_info in working_state.files.items():
+        for path, file_info in tracked_files.files.items():
             self.last_synced_files[path] = file_info.digest
     
     def update_after_pull(self, manifest_digest: str, pulled_files: List["FileInfo"]) -> None:
@@ -74,27 +77,6 @@ class FileInfo(BaseModel):
     digest: str  # sha256:...
     size: int
     mtime: Optional[float] = None
-
-
-class WorkingTreeState(BaseModel):
-    """Current state of tracked files in working directory."""
-    
-    files: Dict[str, FileInfo] = Field(default_factory=dict)
-    
-    @classmethod
-    def scan(cls, tracked: Set[str], root: Path = Path(".")) -> "WorkingTreeState":
-        """Scan tracked files and return their current state."""
-        files = {}
-        for path_str in tracked:
-            path = root / path_str
-            if path.exists():
-                files[path_str] = FileInfo(
-                    path=path_str,
-                    digest=_compute_digest(path),
-                    size=path.stat().st_size,
-                    mtime=path.stat().st_mtime
-                )
-        return cls(files=files)
 
 
 class RemoteState(BaseModel):
@@ -215,7 +197,7 @@ class PushPlan(BaseModel):
     
     def summary(self) -> str:
         """Get human-readable summary."""
-        parts = [f"↑ {len(self.files_to_upload)} files to upload ({_humanize_size(self.total_upload_size)})", 
+        parts = [f"↑ {len(self.files_to_upload)} files to upload ({humanize_size(self.total_upload_size)})", 
                  f"{len(self.files_unchanged)} unchanged"]
         if self.deletes:
             parts.append(f"{len(self.deletes)} to delete")
@@ -233,7 +215,7 @@ class PullPlan(BaseModel):
     
     def summary(self) -> str:
         """Get human-readable summary."""
-        parts = [f"↓ {len(self.files_to_download)} files to download ({_humanize_size(self.total_download_size)})"]
+        parts = [f"↓ {len(self.files_to_download)} files to download ({humanize_size(self.total_download_size)})"]
         if self.conflicts:
             parts.append(f"⚠ {len(self.conflicts)} conflicts")
         if self.files_to_skip:
@@ -241,23 +223,3 @@ class PullPlan(BaseModel):
         if self.files_to_delete_local:
             parts.append(f"{len(self.files_to_delete_local)} to delete locally")
         return ", ".join(parts)
-
-
-# ============= Utilities =============
-
-def _compute_digest(path: Path) -> str:
-    """Compute SHA256 digest of file."""
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            h.update(chunk)
-    return f"sha256:{h.hexdigest()}"
-
-
-def _humanize_size(size: int) -> str:
-    """Convert bytes to human-readable format."""
-    for unit in ["B", "KB", "MB", "GB"]:
-        if size < 1024:
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} TB"

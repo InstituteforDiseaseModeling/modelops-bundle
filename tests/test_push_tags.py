@@ -123,7 +123,7 @@ class TestPushToNewTag:
             with patch("modelops_bundle.ops.load_config", return_value=mock_config), \
                  patch("modelops_bundle.ops.load_tracked", return_value=mock_tracked), \
                  patch("modelops_bundle.ops.load_state", return_value=sync_state), \
-                 patch("modelops_bundle.ops.WorkingTreeState.scan") as mock_scan:
+                 patch("modelops_bundle.ops.TrackedFilesSnapshot.scan") as mock_scan:
                 
                 # Mock working tree matches sync state
                 mock_scan.return_value.files = remote_files
