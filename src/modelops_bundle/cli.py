@@ -7,20 +7,14 @@ import sys
 import typer
 from rich.console import Console
 from rich.table import Table
-from rich.progress import track
-
 from .context import ProjectContext
 from .core import (
     BundleConfig,
     ChangeType,
-    DiffResult,
-    FileChange,
     TrackedFiles,
 )
-from .snapshot import TrackedFilesSnapshot
 from .utils import humanize_size
 from .ops import (
-    compute_diff,
     load_config,
     load_state,
     load_tracked,
@@ -30,6 +24,7 @@ from .ops import (
     save_tracked,
 )
 from .oras import OrasAdapter
+from .working_state import TrackedWorkingState
 
 
 app = typer.Typer(help="ModelOps Bundle - OCI artifact-based model synchronization")
@@ -191,8 +186,8 @@ def status():
         console.print("\n[yellow]No tracked files. Use 'add' to track files.[/yellow]")
         return
     
-    # Scan working tree
-    working = TrackedFilesSnapshot.scan(tracked.files, ctx.root)
+    # Create working state with deletion tracking
+    working_state = TrackedWorkingState.from_tracked(tracked, ctx)
     
     # Try to get remote state
     adapter = OrasAdapter()
@@ -201,9 +196,10 @@ def status():
     except Exception:
         remote = None
     
-    # Compute diff if remote exists
-    if remote:
-        diff = compute_diff(working, remote, state)
+    # Get status summary
+    summary = working_state.get_status(remote, state)
+    
+    if remote and summary:
         
         # Create status table
         table = Table(title="File Status")
@@ -211,30 +207,63 @@ def status():
         table.add_column("Status")
         table.add_column("Size", justify="right")
         
-        for change in diff.changes:
-            status_map = {
-                ChangeType.UNCHANGED: "[green]✓[/green] unchanged",
-                ChangeType.ADDED_LOCAL: "[green]+[/green] new",
-                ChangeType.ADDED_REMOTE: "[blue]↓[/blue] remote only",
-                ChangeType.MODIFIED_LOCAL: "[yellow]M[/yellow] modified locally",
-                ChangeType.MODIFIED_REMOTE: "[blue]↓[/blue] modified remotely",
-                ChangeType.CONFLICT: "[red]⚠[/red] conflict",
-            }
+        # Use summary for a cleaner display
+        status_map = {
+            ChangeType.UNCHANGED: "[green]✓[/green] unchanged",
+            ChangeType.ADDED_LOCAL: "[green]+[/green] new",
+            ChangeType.ADDED_REMOTE: "[blue]↓[/blue] remote only",
+            ChangeType.MODIFIED_LOCAL: "[yellow]M[/yellow] modified locally",
+            ChangeType.MODIFIED_REMOTE: "[blue]↓[/blue] modified remotely",
+            ChangeType.DELETED_LOCAL: "[red]-[/red] deleted locally",
+            ChangeType.DELETED_REMOTE: "[blue]×[/blue] deleted remotely",
+            ChangeType.CONFLICT: "[red]⚠[/red] conflict",
+        }
+        
+        # Build display from summary's changed_files and other lists
+        all_items = []
+        
+        # Add local-only files
+        for file_info in summary.local_only_files:
+            all_items.append((file_info.path, ChangeType.ADDED_LOCAL, file_info))
+        
+        # Add remote-only files  
+        for file_info in summary.remote_only_files:
+            all_items.append((file_info.path, ChangeType.ADDED_REMOTE, file_info))
+        
+        # Add changed files
+        for row in summary.changed_files:
+            all_items.append((row.path, row.change, row.local or row.remote))
+        
+        # Add unchanged files (if not too many)
+        if summary.unchanged <= 10:
+            diff = working_state.compute_diff(remote, state)
+            for change in diff.changes:
+                if change.change_type == ChangeType.UNCHANGED:
+                    all_items.append((change.path, ChangeType.UNCHANGED, change.local))
+        
+        for path, change_type, file_info in sorted(all_items):
             
-            file_info = change.local or change.remote
             if file_info:
                 table.add_row(
-                    change.path,
-                    status_map.get(change.change_type, str(change.change_type)),
-                    humanize_size(file_info.size)
+                    path,
+                    status_map.get(change_type, str(change_type)),
+                    humanize_size(file_info.size) if file_info else "-"
                 )
         
         console.print("\n", table)
+        
+        # Show summary line
+        if summary.unchanged > 10:
+            console.print(f"\n[dim]Plus {summary.unchanged} unchanged files[/dim]")
     else:
         # Just show local files
         console.print("\n[bold]Local files:[/bold]")
-        for path, file_info in working.files.items():
+        for path, file_info in working_state.files.items():
             console.print(f"  {path} ({humanize_size(file_info.size)})")
+        if working_state.has_deletions():
+            console.print(f"\n[red]Deleted locally ({len(working_state.missing)} files):[/red]")
+            for path in sorted(working_state.missing):
+                console.print(f"  [red]-[/red] {path}")
         console.print("\n[yellow]Remote not accessible or empty[/yellow]")
 
 
@@ -261,8 +290,8 @@ def push(
         console.print("[yellow]No tracked files to push[/yellow]")
         return
     
-    # Scan working tree
-    working = TrackedFilesSnapshot.scan(tracked.files, ctx.root)
+    # Create working state with deletion tracking
+    working_state = TrackedWorkingState.from_tracked(tracked, ctx)
     
     # Get remote state
     adapter = OrasAdapter()
@@ -271,21 +300,17 @@ def push(
     except Exception:
         remote = None
     
-    # Compute diff
+    # Compute diff with automatic deletion handling
     state = load_state(ctx)
     if remote:
-        diff = compute_diff(working, remote, state)
+        diff = working_state.compute_diff(remote, state)
     else:
-        # No remote - all files are new
-        changes = [
-            FileChange(
-                path=path,
-                change_type=ChangeType.ADDED_LOCAL,
-                local=file_info
-            )
-            for path, file_info in working.files.items()
-        ]
-        diff = DiffResult(changes=changes)
+        # No remote - compute against empty remote
+        from .core import RemoteState, SyncState
+        diff = working_state.compute_diff(
+            RemoteState(manifest_digest="", files={}),
+            SyncState()
+        )
     
     # Create plan
     plan = diff.to_push_plan()
@@ -298,6 +323,11 @@ def push(
         console.print("\n[yellow]Changes to push:[/yellow]")
         for file in plan.files_to_upload:
             console.print(f"  [green]↑[/green] {file.path} ({humanize_size(file.size)})")
+    
+    if plan.deletes:
+        console.print("\n[red]Files removed from manifest:[/red]")
+        for path in plan.deletes:
+            console.print(f"  [red]-[/red] {path}")
     
     if dry_run:
         console.print("\n[dim]Dry run - no changes made[/dim]")
@@ -348,12 +378,12 @@ def pull(
         console.print(f"[red]✗[/red] Failed to fetch remote: {e}")
         raise typer.Exit(1)
     
-    # Scan working tree
-    working = TrackedFilesSnapshot.scan(tracked.files, ctx.root)
+    # Create working state with deletion tracking
+    working_state = TrackedWorkingState.from_tracked(tracked, ctx)
     
-    # Compute diff
+    # Compute diff with automatic deletion handling
     state = load_state(ctx)
-    diff = compute_diff(working, remote, state)
+    diff = working_state.compute_diff(remote, state)
     
     # Create plan
     plan = diff.to_pull_plan(overwrite)
@@ -549,8 +579,8 @@ def diff(
         console.print("[yellow]No tracked files[/yellow]")
         return
     
-    # Get states
-    working = TrackedFilesSnapshot.scan(tracked.files, ctx.root)
+    # Create working state with deletion tracking
+    working_state = TrackedWorkingState.from_tracked(tracked, ctx)
     adapter = OrasAdapter()
     
     try:
@@ -559,9 +589,9 @@ def diff(
         console.print(f"[red]✗[/red] Failed to fetch remote: {e}")
         raise typer.Exit(1)
     
-    # Compute diff
+    # Compute diff with automatic deletion handling
     state = load_state(ctx)
-    diff = compute_diff(working, remote, state)
+    diff = working_state.compute_diff(remote, state)
     
     # Group changes by type
     groups = {}
@@ -579,6 +609,8 @@ def diff(
         ChangeType.ADDED_REMOTE: ("Remote only", "[blue]↓[/blue]"),
         ChangeType.MODIFIED_LOCAL: ("Modified locally", "[yellow]M[/yellow]"),
         ChangeType.MODIFIED_REMOTE: ("Modified remotely", "[blue]↓[/blue]"),
+        ChangeType.DELETED_LOCAL: ("Deleted locally", "[red]-[/red]"),
+        ChangeType.DELETED_REMOTE: ("Deleted remotely", "[blue]×[/blue]"),
         ChangeType.CONFLICT: ("Conflicts", "[red]⚠[/red]"),
         ChangeType.UNCHANGED: ("Unchanged", "[green]✓[/green]"),
     }

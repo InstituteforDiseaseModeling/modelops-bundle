@@ -1,7 +1,7 @@
 """Core operations for modelops-bundle."""
 
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import List, Optional
 import json
 import yaml
 
@@ -9,18 +9,14 @@ from .context import ProjectContext
 
 from .core import (
     BundleConfig,
-    ChangeType,
-    DiffResult,
-    FileChange,
-    FileInfo,
     PullPlan,
     PushPlan,
     RemoteState,
     SyncState,
     TrackedFiles,
 )
-from .snapshot import TrackedFilesSnapshot
 from .oras import OrasAdapter
+from .working_state import TrackedWorkingState
 
 
 # ============= File I/O =============
@@ -95,96 +91,6 @@ def save_state(state: SyncState, ctx: Optional[ProjectContext] = None) -> None:
         json.dump(state.model_dump(), f, indent=2)
 
 
-# ============= Diff Operations =============
-
-def compute_diff(
-    local: TrackedFilesSnapshot,
-    remote: RemoteState,
-    last_sync: SyncState,
-    missing_local: Optional[Set[str]] = None
-) -> DiffResult:
-    """Compute differences between local and remote states."""
-    changes = []
-    missing_local = missing_local or set()
-    
-    # Handle local deletions first
-    for path in missing_local:
-        last_digest = last_sync.last_synced_files.get(path)
-        remote_file = remote.files.get(path)
-        
-        if last_digest is None:
-            # Never synced - skip (file was added then deleted before sync)
-            continue
-            
-        if remote_file and remote_file.digest != last_digest:
-            # Remote changed since last sync, local deleted -> CONFLICT
-            change_type = ChangeType.CONFLICT
-        else:
-            # Remote unchanged or absent -> DELETED_LOCAL
-            change_type = ChangeType.DELETED_LOCAL
-            
-        changes.append(FileChange(
-            path=path,
-            change_type=change_type,
-            local=None,
-            remote=remote_file,
-            last_synced=last_digest
-        ))
-    
-    # Get paths that are present locally and/or remotely (excluding missing)
-    present_local = set(local.files.keys())
-    all_paths = (present_local | set(remote.files.keys())) - missing_local
-    
-    for path in all_paths:
-        local_file = local.files.get(path)
-        remote_file = remote.files.get(path)
-        last_digest = last_sync.last_synced_files.get(path)
-        
-        # Both exist
-        if local_file and remote_file:
-            if local_file.digest == remote_file.digest:
-                change_type = ChangeType.UNCHANGED
-            elif last_digest is None:
-                # No baseline - conservative conflict
-                change_type = ChangeType.CONFLICT
-            elif local_file.digest == last_digest and remote_file.digest != last_digest:
-                change_type = ChangeType.MODIFIED_REMOTE
-            elif remote_file.digest == last_digest and local_file.digest != last_digest:
-                change_type = ChangeType.MODIFIED_LOCAL
-            else:
-                # Both modified
-                change_type = ChangeType.CONFLICT
-        
-        # Local only
-        elif local_file and not remote_file:
-            if last_digest:
-                # File was previously synced
-                if local_file.digest == last_digest:
-                    change_type = ChangeType.DELETED_REMOTE  # Unchanged locally, deleted remotely
-                else:
-                    change_type = ChangeType.CONFLICT  # Modified locally, deleted remotely
-            else:
-                change_type = ChangeType.ADDED_LOCAL  # Never synced, local only
-        
-        # Remote only
-        elif remote_file and not local_file:
-            change_type = ChangeType.ADDED_REMOTE
-        
-        # Neither (shouldn't happen)
-        else:
-            continue
-        
-        changes.append(FileChange(
-            path=path,
-            change_type=change_type,
-            local=local_file,
-            remote=remote_file,
-            last_synced=last_digest
-        ))
-    
-    return DiffResult(changes=changes)
-
-
 # ============= Push Operation =============
 
 def push(
@@ -197,8 +103,8 @@ def push(
     if ctx is None:
         ctx = ProjectContext()
     
-    # Scan working tree
-    working = TrackedFilesSnapshot.scan(tracked.files, ctx.root)
+    # Create working state with deletion tracking
+    working_state = TrackedWorkingState.from_tracked(tracked, ctx)
     
     # Get remote state
     adapter = OrasAdapter()
@@ -213,34 +119,36 @@ def push(
     # Load sync state
     state = load_state(ctx)
     
-    # Compute diff
+    # Compute diff with automatic deletion handling
     # If pushing to a new tag (remote doesn't exist), don't use sync state for comparison
     # as sync state is from default tag pushes
-    if not remote_exists:
-        # New tag - treat all files as needing upload
-        diff = compute_diff(working, remote, SyncState())  # Empty sync state
-    else:
-        # Existing tag - use sync state for optimization
-        diff = compute_diff(working, remote, state)
+    diff = working_state.compute_diff(remote, state if remote_exists else SyncState())
     
     # Create push plan
     plan = diff.to_push_plan()
     
-    if not plan.files_to_upload and remote_exists:
-        return remote.manifest_digest  # Nothing to push (only if remote exists)
+    # Only skip if the remote manifest already matches exactly what we'd produce
+    if remote_exists and not plan.files_to_upload:
+        local_manifest = {(f.path, f.digest) for f in plan.manifest_files}
+        remote_manifest = {(p, fi.digest) for p, fi in remote.files.items()}
+        if local_manifest == remote_manifest:
+            return remote.manifest_digest
+        # else: proceed to push so the manifest is replaced (e.g., to drop remote-only files)
     
     # Execute push - pass ALL manifest files, not just changed ones!
     # ORAS will create manifest with exactly these files
+    # Sort for deterministic manifest order (helps stable digest comparisons across runs)
+    files_for_push = sorted(plan.manifest_files, key=lambda f: f.path)
     manifest_digest = adapter.push_files(
         config.registry_ref,
-        plan.manifest_files,  # CRITICAL: Full manifest, not just files_to_upload!
+        files_for_push,
         tag or config.default_tag,
         config.artifact_type,
         ctx=ctx
     )
     
     # Update sync state
-    state.update_after_push(manifest_digest, working)
+    state.update_after_push(manifest_digest, working_state.snapshot)
     save_state(state, ctx)
     
     return manifest_digest
@@ -259,8 +167,8 @@ def pull(
     if ctx is None:
         ctx = ProjectContext()
     
-    # Scan working tree
-    working = TrackedFilesSnapshot.scan(tracked.files, ctx.root)
+    # Create working state with deletion tracking
+    working_state = TrackedWorkingState.from_tracked(tracked, ctx)
     
     # Get remote state
     adapter = OrasAdapter()
@@ -269,8 +177,8 @@ def pull(
     # Load sync state
     state = load_state(ctx)
     
-    # Compute diff
-    diff = compute_diff(working, remote, state)
+    # Compute diff with automatic deletion handling
+    diff = working_state.compute_diff(remote, state)
     
     # Create pull plan
     plan = diff.to_pull_plan(overwrite)
@@ -292,10 +200,13 @@ def pull(
         if file_path.exists():
             file_path.unlink()
         # Remove from tracked files
-        tracked.remove([Path(path)])
+        tracked.remove(Path(path))
     
     # Update sync state
     state.update_after_pull(remote.manifest_digest, plan.files_to_download)
+    # Remove deleted files from sync state
+    for path in plan.files_to_delete_local:
+        state.last_synced_files.pop(path, None)
     save_state(state, ctx)
     
     # Update tracked files with new files from remote
@@ -305,10 +216,3 @@ def pull(
     
     return plan
 
-
-# ============= Utilities =============
-
-def _get_timestamp() -> float:
-    """Get current timestamp."""
-    import time
-    return time.time()

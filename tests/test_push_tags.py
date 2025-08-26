@@ -12,6 +12,7 @@ from modelops_bundle.core import (
     FileInfo,
 )
 from modelops_bundle.context import ProjectContext
+from modelops_bundle.utils import compute_digest
 
 
 @pytest.fixture
@@ -92,19 +93,23 @@ class TestPushToNewTag:
     def test_push_to_existing_tag_with_no_changes(self, mock_context, mock_config, mock_tracked):
         """Test that pushing to existing tag with no changes is optimized."""
         
+        # Compute actual digests from the test files
+        d1 = compute_digest(mock_context.root / "file1.txt")
+        d2 = compute_digest(mock_context.root / "file2.txt")
+        
         with patch("modelops_bundle.ops.OrasAdapter") as MockAdapter:
             adapter = MockAdapter.return_value
             
-            # Mock: Tag exists with same files
+            # Mock: Tag exists with same files (using REAL digests)
             remote_files = {
                 "file1.txt": FileInfo(
                     path="file1.txt",
-                    digest="sha256:existing1",
+                    digest=d1,  # Real digest
                     size=100
                 ),
                 "file2.txt": FileInfo(
                     path="file2.txt", 
-                    digest="sha256:existing2",
+                    digest=d2,  # Real digest
                     size=200
                 )
             }
@@ -113,22 +118,18 @@ class TestPushToNewTag:
                 files=remote_files
             )
             
-            # Mock: Sync state matches remote (no changes)
+            # Mock: Sync state matches remote (using REAL digests)
             sync_state = SyncState()
             sync_state.last_synced_files = {
-                "file1.txt": "sha256:existing1",
-                "file2.txt": "sha256:existing2"
+                "file1.txt": d1,  # Real digest
+                "file2.txt": d2   # Real digest
             }
             
             with patch("modelops_bundle.ops.load_config", return_value=mock_config), \
                  patch("modelops_bundle.ops.load_tracked", return_value=mock_tracked), \
-                 patch("modelops_bundle.ops.load_state", return_value=sync_state), \
-                 patch("modelops_bundle.ops.TrackedFilesSnapshot.scan") as mock_scan:
+                 patch("modelops_bundle.ops.load_state", return_value=sync_state):
                 
-                # Mock working tree matches sync state
-                mock_scan.return_value.files = remote_files
-                
-                # Execute push
+                # Execute push - should detect no changes since digests match
                 digest = push(mock_config, mock_tracked, tag="latest", ctx=mock_context)
                 
                 # Verify no push was needed (optimization worked)

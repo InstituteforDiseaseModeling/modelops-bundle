@@ -11,6 +11,7 @@ from oras.container import Container
 from .context import ProjectContext
 from .constants import BUNDLE_VERSION
 from .core import FileInfo, RemoteState
+from .utils import get_iso_timestamp
 
 
 class OrasAdapter:
@@ -76,7 +77,7 @@ class OrasAdapter:
             # Create manifest annotations
             manifest_annotations = {
                 "modelops-bundle.version": BUNDLE_VERSION,
-                "org.opencontainers.image.created": _get_timestamp(),
+                "org.opencontainers.image.created": get_iso_timestamp(),
             }
             
             # Push with ORAS
@@ -183,10 +184,3 @@ class OrasAdapter:
         tags = self.client.get_tags(registry_ref)
         return list(tags) if tags else []
 
-
-# ============= Utilities =============
-
-def _get_timestamp() -> str:
-    """Get ISO timestamp."""
-    from datetime import datetime
-    return datetime.utcnow().isoformat() + "Z"

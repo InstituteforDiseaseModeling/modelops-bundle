@@ -56,7 +56,9 @@ class SyncState(BaseModel):
         """Update sync state after successful push."""
         self.last_push_digest = manifest_digest
         self.timestamp = time.time()
-        # Save ALL working tree digests, not just uploaded ones
+        # Rebuild last_synced_files with only files that exist
+        # This prunes deleted files from the state
+        self.last_synced_files = {}
         for path, file_info in tracked_files.files.items():
             self.last_synced_files[path] = file_info.digest
     

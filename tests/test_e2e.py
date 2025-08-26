@@ -8,11 +8,12 @@ import pytest
 from modelops_bundle.core import (
     BundleConfig,
     ChangeType,
+    RemoteState,
+    SyncState,
     TrackedFiles,
 )
-from modelops_bundle.snapshot import TrackedFilesSnapshot
+from modelops_bundle.working_state import TrackedWorkingState
 from modelops_bundle.ops import (
-    compute_diff,
     load_config,
     load_state,
     load_tracked,
@@ -77,19 +78,23 @@ class TestBundleWorkflow:
         """Test scanning working tree."""
         os.chdir(sample_project)
         
+        # Initialize project context
+        from modelops_bundle.context import ProjectContext
+        ctx = ProjectContext.init()
+        
         # Track some files
         tracked = TrackedFiles()
         tracked.add(Path("src/model.py"), Path("data/data.csv"))
         
-        # Scan working tree
-        working = TrackedFilesSnapshot.scan(tracked.files)
+        # Create working state
+        working_state = TrackedWorkingState.from_tracked(tracked, ctx)
         
-        assert len(working.files) == 2
-        assert "src/model.py" in working.files
-        assert "data/data.csv" in working.files
+        assert len(working_state.files) == 2
+        assert "src/model.py" in working_state.files
+        assert "data/data.csv" in working_state.files
         
         # Check file info
-        model_info = working.files["src/model.py"]
+        model_info = working_state.files["src/model.py"]
         assert model_info.size > 0
         assert model_info.digest.startswith("sha256:")
     
@@ -158,11 +163,11 @@ class TestBundleWorkflow:
         # Get initial state
         adapter = OrasAdapter()
         remote = adapter.get_remote_state(registry_ref)
-        working = TrackedFilesSnapshot.scan(tracked.files)
+        working_state = TrackedWorkingState.from_tracked(tracked)
         state = load_state()
         
         # Compute diff - should be unchanged
-        diff = compute_diff(working, remote, state)
+        diff = working_state.compute_diff(remote, state)
         assert all(c.change_type == ChangeType.UNCHANGED for c in diff.changes)
         
         # Modify a file
@@ -171,10 +176,10 @@ class TestBundleWorkflow:
         model_path.write_text(original_content + "\n# Modified")
         
         # Scan again
-        working = TrackedFilesSnapshot.scan(tracked.files)
+        working_state = TrackedWorkingState.from_tracked(tracked)
         
         # Compute diff - should show modification
-        diff = compute_diff(working, remote, state)
+        diff = working_state.compute_diff(remote, state)
         changes_by_type = {c.path: c.change_type for c in diff.changes}
         assert changes_by_type["src/model.py"] == ChangeType.MODIFIED_LOCAL
         assert changes_by_type["data/data.csv"] == ChangeType.UNCHANGED
@@ -214,7 +219,7 @@ class TestBundleWorkflow:
         model_path.write_text(original + "\n# Local change")
         
         # Get states
-        working = TrackedFilesSnapshot.scan(tracked.files)
+        working_state = TrackedWorkingState.from_tracked(tracked)
         adapter = OrasAdapter()
         remote = adapter.get_remote_state(registry_ref)
         
@@ -222,7 +227,7 @@ class TestBundleWorkflow:
         state.last_synced_files = {"src/model.py": original_digest}
         
         # Compute diff - should show conflict
-        diff = compute_diff(working, remote, state)
+        diff = working_state.compute_diff(remote, state)
         conflicts = [c for c in diff.changes if c.change_type == ChangeType.CONFLICT]
         assert len(conflicts) == 1
         assert conflicts[0].path == "src/model.py"
