@@ -57,10 +57,10 @@ class TestPullSafetyGuards:
     """Test safety guards prevent data loss during pull."""
     
     def test_pull_overwrites_untracked_files_bug(self, tmp_path, monkeypatch, registry_ref):
-        """DEMONSTRATES BUG: Pull can overwrite untracked files without --overwrite.
+        """Test that pull correctly prevents overwriting untracked files without --overwrite.
         
-        This test should FAIL until we fix the bug where pull can silently
-        overwrite untracked local files.
+        This test was previously marked as xfail but the bug has been fixed - pull now
+        correctly raises an error when it would overwrite untracked files.
         """
         monkeypatch.chdir(tmp_path)
         ctx = ProjectContext.init()

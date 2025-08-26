@@ -9,7 +9,11 @@ type of content in container registries. An ORAS artifact consists of three
 main components:
 
 1. **Manifest** - A JSON document that describes the artifact
-2. **Config** - Optional structured metadata 
+
+2. **Config** - Optional structured metadata, stored as a *single blob*
+   (content-addressed by digest) that the manifest points. It's like a layer in
+   storage, but it's not downloaded as a "file payload".
+
 3. **Layers** - The actual content files (an OCI concept for packaging multiple blobs)
 
 **Simple Analogy**: Think of an artifact as a versioned folder/package, and
@@ -20,30 +24,35 @@ config is a special metadata file about the folder's purpose.
 ### Artifact Types
 
 The `artifactType` property declares what kind of content the artifact
-contains. This is your bundle's identity - it tells consumers "this is an
-epidemiology model bundle" before they even download it.
+contains. This is your bundle's identity - it tells consumers "this is an model
+bundle" before they even download it.
 
 ```json
-"artifactType": "application/vnd.myorg.epi-model.v1"
+"artifactType": "application/vnd.idm.modelops-bundle.v1"
 ```
 
-Without `artifactType`, the system falls back to using `config.mediaType` for identification (legacy approach).
+Without `artifactType`, the system falls back to using `config.mediaType` for
+identification (legacy approach). Not that the ORAS Python SDK does not yet
+support `artifactType`.
 
 ### Layers vs Config
+
 Understanding when to use layers versus config is crucial for clean design:
 
-**Layers** (OCI concept for content storage):
+**Layers** (OCI concept for content storage, related but distinct from the
+container layers):
+
 - Store actual files: model code, parameter files, datasets
-- Each layer is a blob with its own mediaType
+- Each layer is a blob with its own `mediaType`
 - Content-addressed and deduplicated
 - Downloaded on-demand
 - Best for: Simulation scripts, data files, documentation
 
 **Config**:
+
 - Stores structured metadata about the artifact
-- Single JSON/YAML object
-- Always downloaded with manifest
-- Parsed by tools for decision-making
+- Single JSON/YAML object that can be downloaded using its descriptor.
+- Often parsed by tools for decision-making
 - Best for: Model parameters, population structure, simulation settings
 
 Why the distinction? Config is meant to be small, quickly parseable metadata
@@ -53,7 +62,7 @@ layers. Layers are for the actual content.
 ### Annotations
 
 Annotations are simple key-value pairs for searchable metadata. They can appear
-at three levels:
+at two levels:
 
 **Manifest annotations** (artifact-level):
 ```json
@@ -83,145 +92,52 @@ at three levels:
 ### Descriptors
 
 Descriptors are the lower-level abstraction that references any content by its
-digest, size, and mediaType. Everything in OCI is referenced through
-descriptors - the manifest has a descriptor, config has a descriptor, each
-layer has a descriptor. They're the "pointers" of the OCI world.
+`digest`, `size`, and `mediaType` (you'll see these triplets everywhere in OCI
+JSON). Everything in OCI is referenced through descriptors - the manifest has a
+descriptor, config has a descriptor, each layer has a descriptor. They're the
+"pointers" of the OCI world.
 
-## Epidemiology Model Bundle Design
+## Design 
 
-### Recommended Structure
+### Bundle as OCI Artifact
 
-A clean epidemiology model bundle design uses ORAS primitives intentionally.
-Each layer includes `modelops-bundle.bundle-layer` annotations to specify which workers/roles
-need which files:
+- Each bundle is stored as a standard OCI artifact in any OCI-compliant registry
+- Files are stored as layers with preserved paths via annotations
+- Config blob could store bundle metadata (roles, schema version) but isn't used currently
+- Enables versioning, distribution, and caching through existing container infrastructure
 
-```json
-{
-  "schemaVersion": 2,
-  "mediaType": "application/vnd.oci.image.manifest.v1+json",
-  "artifactType": "application/vnd.myorg.epi-model.v1",
-  
-  "config": {
-    "mediaType": "application/vnd.myorg.epi-model.config.v1+json",
-    "digest": "sha256:config123...",
-    "size": 2048
-  },
-  
-  "layers": [
-    {
-      "mediaType": "application/x-yaml",
-      "digest": "sha256:cfg456...",
-      "size": 1024,
-      "annotations": {
-        "org.opencontainers.image.title": "config.yaml",
-        "modelops-bundle.bundle-layer": "config"
-      }
-    },
-    {
-      "mediaType": "application/x-python",
-      "digest": "sha256:model789...",
-      "size": 8192,
-      "annotations": {
-        "org.opencontainers.image.title": "src/model.py",
-        "modelops-bundle.bundle-layer": "compute,simulation"
-      }
-    },
-    {
-      "mediaType": "application/x-python",
-      "digest": "sha256:targets012...",
-      "size": 4096,
-      "annotations": {
-        "org.opencontainers.image.title": "src/targets.py",
-        "modelops-bundle.bundle-layer": "compute,analysis"
-      }
-    },
-    {
-      "mediaType": "text/csv",
-      "digest": "sha256:data345...",
-      "size": 156789,
-      "annotations": {
-        "org.opencontainers.image.title": "data/data.csv",
-        "modelops-bundle.bundle-layer": "data,compute"
-      }
-    },
-    {
-      "mediaType": "text/plain",
-      "digest": "sha256:reqs678...",
-      "size": 256,
-      "annotations": {
-        "org.opencontainers.image.title": "requirements.txt",
-        "modelops-bundle.bundle-layer": "setup"
-      }
-    },
-    {
-      "mediaType": "text/markdown",
-      "digest": "sha256:readme901...",
-      "size": 3456,
-      "annotations": {
-        "org.opencontainers.image.title": "README.md",
-        "modelops-bundle.bundle-layer": "documentation"
-      }
-    }
-  ],
-  
-  "annotations": {
-    "epi.model.name": "seattle-flu-abm",
-    "epi.model.version": "3.2.0",
-    "epi.model.framework": "mesa"
-  }
-}
-```
+### Local-First Architecture
 
-### Config Content Example
 
-The config blob would contain structured agent-based model metadata. Below is
-an artificial example (in reality modelops won't use this exact scheme):
+- `.modelops-bundle/` directory maintains local state (`config.yaml`, `tracked`, `state.json`).
 
-```json
-{
-  "model": {
-    "type": "agent-based",
-    "framework": "mesa",
-    "disease": "influenza",
-    "transmission_mode": "airborne",
-    "timestep": "hourly"
-  },
-  "population": {
-    "size": 100000,
-    "age_distribution": "seattle-metro-2020",
-    "contact_layers": ["household", "workplace", "school", "community"],
-    "geography": {
-      "region": "seattle-metro",
-      "resolution": "census-tract"
-    }
-  },
-  "parameters": {
-    "R0": 1.4,
-    "incubation_period_days": 2.1,
-    "infectious_period_days": 3.5,
-    "transmission_probability": 0.02,
-    "vaccination_coverage": 0.45
-  },
-  "interventions": {
-    "social_distancing": {
-      "enabled": true,
-      "reduction_factor": 0.3
-    },
-    "school_closure": {
-      "enabled": false,
-      "threshold": 0.05
-    }
-  },
-  "metrics": {
-    "calibration": {
-      "mse_incidence": 0.023,
-      "r2_hospitalizations": 0.89,
-      "mae_peak_timing": 2.3
-    },
-    "validation": {
-      "holdout_mse": 0.031,
-      "cross_validation_score": 0.86
-    }
-  }
-}
-```
+- Local tracked files list is source of truth for what belongs in bundle and
+  should be published to registry on next push.
+
+### State Synchronization Model
+
+- Three-way diff between: local files, remote registry, last sync state
+- Tracks changes via content hashes (SHA256 digests)
+- Sync state records last push/pull digests for change detection
+- Enables conflict detection and safe merge operations
+
+### Push/Pull Symmetry
+
+- Push: Uploads all tracked files as layers, creates manifest
+- Pull: Downloads all layers, mirrors exact remote state
+- Both operations update sync state for future diff calculations
+- Provides predictable, reproducible bundle deployment
+
+### Registry as Dumb Storage
+
+- Registry stores blobs and manifests, no business logic
+- All intelligence in client (tracking, diffing, conflict resolution)
+- Supports any OCI registry without custom extensions
+- Maximum portability and compatibility
+
+### Immutable Content Addressing
+
+- All content identified by SHA256 digest
+- Deduplication happens automatically at registry level
+- Enables reliable caching and integrity verification
+- Digests used for both change detection and content validation

@@ -20,7 +20,7 @@ def can_connect_to_registry(host_port: str = None) -> bool:
     try:
         host, port = host_port.split(":")
         s = socket.socket()
-        s.settimeout(0.5)
+        s.settimeout(2.0)  # Increased timeout for CI stability
         try:
             s.connect((host, int(port)))
             return True

@@ -2,12 +2,11 @@
 
 
 
-
 ## Registry UI + ORAS Artifacts
 
-Registry UI at http://localhost:8080 won't show ORAS artifacts properly. It's
-designed for Docker images, not OCI artifacts. The artifacts are there, just
-not displayed.
+The `joxit/docker-registry-ui` registry UI (from the `docker-compose.yml` file)
+at http://localhost:8080 won't show ORAS artifacts properly. It's designed for
+Docker images, not OCI artifacts. The artifacts are there, just not displayed.
 
 To verify artifacts exist:
 
@@ -29,11 +28,13 @@ oras pull --plain-http localhost:5555/epi_model:v1
 
 ## ORAS/OCI Artifact Layers
 
-ORAS layers != Docker layers:
+ORAS layers ≠ Docker layers:
 
-**Docker layers**: Filesystem changesets that stack to build a complete filesystem. Order matters.
+ - **Docker layers**: Filesystem changesets that stack to build a complete
+   filesystem. Order matters.
 
-**ORAS layers**: Independent blobs. Each file becomes its own layer with metadata. No filesystem semantics - they don't stack or merge.
+ - **ORAS layers**: Independent blobs. Each file becomes its own layer with
+   metadata. No filesystem semantics - they don't stack or merge.
 
 Example:
 ```bash
@@ -44,11 +45,11 @@ Creates:
 - **Layer 1**: `model.py` as blob with `org.opencontainers.image.title: "src/model.py"`  
 - **Layer 2**: `targets.py` as blob with `org.opencontainers.image.title: "src/targets.py"`
 
-No deduplication, no compression by default, flat structure. Pull recreates files from annotations.
-
 ## ORAS-py Path Stripping Issue
 
-**Problem**: oras-py strips directory paths when pushing files, unlike the ORAS CLI.
+**Problem**: oras-py strips directory paths when pushing files, unlike the ORAS
+CLI. See issue:
+https://github.com/oras-project/oras-py/issues/217#issuecomment-3221144601  
 
 **Root cause**: Line 786 in oras-py's provider.py:
 ```python

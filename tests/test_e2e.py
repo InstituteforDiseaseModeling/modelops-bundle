@@ -48,9 +48,9 @@ def registry_ref():
 class TestBundleWorkflow:
     """Test complete bundle workflow."""
     
-    def test_init_and_add(self, sample_project):
+    def test_init_and_add(self, sample_project, monkeypatch):
         """Test initializing a bundle and adding files."""
-        os.chdir(sample_project)
+        monkeypatch.chdir(sample_project)
         
         # Initialize bundle
         config = BundleConfig(
@@ -74,9 +74,9 @@ class TestBundleWorkflow:
         assert "data/data.csv" in loaded_tracked.files
         assert len(loaded_tracked.files) == 2
     
-    def test_working_tree_scan(self, sample_project):
+    def test_working_tree_scan(self, sample_project, monkeypatch):
         """Test scanning working tree."""
-        os.chdir(sample_project)
+        monkeypatch.chdir(sample_project)
         
         # Initialize project context
         from modelops_bundle.context import ProjectContext
@@ -99,9 +99,9 @@ class TestBundleWorkflow:
         assert model_info.digest.startswith("sha256:")
     
     @pytest.mark.integration
-    def test_push_and_pull(self, sample_project, registry_ref):
+    def test_push_and_pull(self, sample_project, registry_ref, monkeypatch):
         """Test pushing and pulling from registry."""
-        os.chdir(sample_project)
+        monkeypatch.chdir(sample_project)
         
         # Initialize
         config = BundleConfig(registry_ref=registry_ref)
@@ -126,7 +126,7 @@ class TestBundleWorkflow:
         # Pull to new location
         pull_dir = sample_project.parent / "pull_test"
         pull_dir.mkdir()
-        os.chdir(pull_dir)
+        monkeypatch.chdir(pull_dir)
         
         # Initialize in new location
         save_config(config)
@@ -145,9 +145,9 @@ class TestBundleWorkflow:
         assert original_model == pulled_model
     
     @pytest.mark.integration
-    def test_pull_untracked_collision_protection(self, sample_project, registry_ref):
+    def test_pull_untracked_collision_protection(self, sample_project, registry_ref, monkeypatch):
         """Test that pull protects untracked files from being overwritten."""
-        os.chdir(sample_project)
+        monkeypatch.chdir(sample_project)
         
         # Initialize project A with one tracked file
         from modelops_bundle.context import ProjectContext
@@ -171,7 +171,7 @@ class TestBundleWorkflow:
         # Create project B in different location
         project_b = sample_project.parent / "project_b"
         project_b.mkdir()
-        os.chdir(project_b)
+        monkeypatch.chdir(project_b)
         ctx_b = ProjectContext.init()
         
         # Initialize B with same registry
@@ -191,7 +191,7 @@ class TestBundleWorkflow:
         ops_push(config, tracked_b, ctx=ctx_b)
         
         # Go back to A and try to pull
-        os.chdir(sample_project)
+        monkeypatch.chdir(sample_project)
         
         # Pull without --overwrite should fail due to untracked collision
         with pytest.raises(ValueError, match="untracked files would be overwritten"):
@@ -212,9 +212,9 @@ class TestBundleWorkflow:
         assert len(tracked_after.files) == 2  # model.py and secret.txt
     
     @pytest.mark.integration
-    def test_diff_and_sync(self, sample_project, registry_ref):
+    def test_diff_and_sync(self, sample_project, registry_ref, monkeypatch):
         """Test diff detection and sync."""
-        os.chdir(sample_project)
+        monkeypatch.chdir(sample_project)
         
         # Initialize and track files
         config = BundleConfig(registry_ref=registry_ref)
@@ -259,9 +259,9 @@ class TestBundleWorkflow:
         assert remote_new.files["src/model.py"].digest != remote.files["src/model.py"].digest
     
     @pytest.mark.integration  
-    def test_conflict_detection(self, sample_project, registry_ref):
+    def test_conflict_detection(self, sample_project, registry_ref, monkeypatch):
         """Test conflict detection in 3-way merge."""
-        os.chdir(sample_project)
+        monkeypatch.chdir(sample_project)
         
         # Initialize
         config = BundleConfig(registry_ref=registry_ref)
@@ -306,7 +306,7 @@ def test_full_workflow_with_cli_commands(sample_project, registry_ref, monkeypat
     import subprocess
     import sys
     
-    os.chdir(sample_project)
+    monkeypatch.chdir(sample_project)
     
     # Helper to run CLI commands
     def run_cli(*args):

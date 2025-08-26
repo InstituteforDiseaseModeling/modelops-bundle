@@ -113,7 +113,7 @@ class TestDigestConsistency:
             finally:
                 os.chdir(old_cwd)
     
-    def test_digest_fallback_warning(self, registry_ref, monkeypatch):
+    def test_digest_fallback_warning(self, registry_ref, monkeypatch, caplog):
         """Test that we warn when Docker-Content-Digest header is missing."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
@@ -153,31 +153,16 @@ class TestDigestConsistency:
             
                 # Should log warning about missing header
                 import logging
-                # Capture log output
-                import io
-                import sys
                 
-                # Set up logging to capture warnings
-                logger = logging.getLogger('modelops_bundle.oras')
-                old_level = logger.level
-                logger.setLevel(logging.WARNING)
+                # Use caplog to capture log messages
+                caplog.set_level(logging.WARNING, logger='modelops_bundle.oras')
                 
-                # Create a string buffer to capture log output
-                log_capture = io.StringIO()
-                handler = logging.StreamHandler(log_capture)
-                handler.setLevel(logging.WARNING)
-                logger.addHandler(handler)
+                manifest, digest, raw = adapter.get_manifest_with_digest(registry_ref, "test")
                 
-                try:
-                    manifest, digest, raw = adapter.get_manifest_with_digest(registry_ref, "test")
-                    
-                    # Check that warning was logged
-                    log_output = log_capture.getvalue()
-                    assert "Docker-Content-Digest" in log_output
-                    assert "using digest computed from raw manifest bytes" in log_output
-                finally:
-                    logger.removeHandler(handler)
-                    logger.setLevel(old_level)
+                # Check that warning was logged
+                assert len(caplog.records) > 0
+                assert any("Docker-Content-Digest" in record.message for record in caplog.records)
+                assert any("using digest computed from raw manifest bytes" in record.message for record in caplog.records)
             finally:
                 os.chdir(old_cwd)
     
