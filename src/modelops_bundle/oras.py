@@ -33,9 +33,14 @@ class OrasAdapter:
         """Initialize ORAS Registry client."""
         self.client = Registry(insecure=insecure)
     
-    def _build_target(self, registry_ref: str, tag: str) -> str:
-        """Build full target reference."""
-        return f"{registry_ref}:{tag}"
+    def _build_target(self, registry_ref: str, reference: str) -> str:
+        """Build full target reference (works with tags or digests)."""
+        if reference.startswith("sha256:"):
+            # It's a digest, use @ notation
+            return f"{registry_ref}@{reference}"
+        else:
+            # It's a tag, use : notation
+            return f"{registry_ref}:{reference}"
     
     def _try_head_for_digest(self, container: Container) -> Optional[str]:
         """Try to get digest via HEAD request (faster, fewer bytes).
@@ -76,12 +81,28 @@ class OrasAdapter:
         _, digest, _ = self.get_manifest_with_digest(registry_ref, reference)
         return digest
     
+    def resolve_tag_to_digest(
+        self, registry_ref: str, tag: str = "latest"
+    ) -> str:
+        """Resolve a tag to its current digest (for race prevention)."""
+        return self.get_digest_only(registry_ref, tag)
+    
+    def get_current_tag_digest(
+        self, registry_ref: str, tag: str = "latest"
+    ) -> Optional[str]:
+        """Get current digest for a tag, or None if not found."""
+        try:
+            return self.get_digest_only(registry_ref, tag)
+        except Exception:
+            return None
+    
     def get_manifest_with_digest(
         self, registry_ref: str, reference: str = "latest", retries: int = 3
     ) -> Tuple[dict, str, bytes]:
         """
         Return (manifest_json, canonical_digest, raw_bytes).
         
+        Reference can be a tag (e.g., "latest") or digest (e.g., "sha256:...").
         Digest comes from Docker-Content-Digest header when available;
         otherwise it is computed from the exact raw bytes.
         Includes retry logic for eventual consistency after push.
@@ -166,7 +187,7 @@ class OrasAdapter:
         registry_ref: str,
         files: List[FileInfo],
         tag: str = "latest",
-        artifact_type: str = "application/vnd.modelops.bundle.v1",
+        artifact_type: str = "application/vnd.modelops.bundle.v1",  # TODO: Set in manifest when oras-py supports it
         ctx: Optional[ProjectContext] = None
     ) -> str:
         """Push files to registry and return manifest digest."""
@@ -230,15 +251,26 @@ class OrasAdapter:
     def pull_files(
         self,
         registry_ref: str,
-        tag: str = "latest",
+        reference: str = "latest",  # Can be tag or digest
         output_dir: Path = Path("."),
-        ctx: Optional[ProjectContext] = None
+        ctx: Optional[ProjectContext] = None,
+        tag: Optional[str] = None  # Deprecated, for backward compat
     ) -> List[Path]:
-        """Pull files from registry and return paths."""
+        """Pull files from registry using tag or digest."""
         if ctx is None:
             ctx = ProjectContext()
         
-        target = self._build_target(registry_ref, tag)
+        # Handle backward compat
+        if tag is not None:
+            reference = tag
+        
+        # Build target (works with both tags and digests)
+        if reference.startswith("sha256:"):
+            # It's a digest, use @ notation
+            target = f"{registry_ref}@{reference}"
+        else:
+            # It's a tag, use : notation
+            target = f"{registry_ref}:{reference}"
         
         # Pull with ORAS
         files = self.client.pull(
@@ -251,20 +283,20 @@ class OrasAdapter:
     def get_manifest(
         self,
         registry_ref: str,
-        tag: str = "latest"
+        reference: str = "latest"  # Can be tag or digest
     ) -> dict:
         """Get manifest from registry."""
-        manifest, _, _ = self.get_manifest_with_digest(registry_ref, tag)
+        manifest, _, _ = self.get_manifest_with_digest(registry_ref, reference)
         return manifest
     
     def get_remote_state(
         self,
         registry_ref: str,
-        tag: str = "latest"
+        reference: str = "latest"  # Can be tag or digest
     ) -> RemoteState:
         """Get remote state from manifest."""
         try:
-            manifest, manifest_digest, _ = self.get_manifest_with_digest(registry_ref, tag)
+            manifest, manifest_digest, _ = self.get_manifest_with_digest(registry_ref, reference)
         except Exception as e:
             # Registry might be empty or unreachable
             raise RuntimeError(f"Failed to fetch manifest: {e}")
@@ -272,7 +304,7 @@ class OrasAdapter:
         # Guard against index/manifest list
         if manifest.get("manifests"):
             raise ValueError(
-                f"Cannot get remote state for manifest index/list at {registry_ref}:{tag}. "
+                f"Cannot get remote state for manifest index/list at {registry_ref}:{reference}. "
                 "This appears to be a multi-platform image, not a ModelOps bundle."
             )
         
@@ -283,7 +315,7 @@ class OrasAdapter:
             # Might be an index that slipped through
             logger = logging.getLogger(__name__)
             logger.warning(
-                f"Manifest at {registry_ref}:{tag} has no layers. "
+                f"Manifest at {registry_ref}:{reference} has no layers. "
                 "It might be an index or empty manifest."
             )
         

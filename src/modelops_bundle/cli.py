@@ -342,6 +342,7 @@ def status(
 def push(
     tag: Optional[str] = typer.Option(None, help="Tag to push"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be pushed"),
+    force: bool = typer.Option(False, "--force", help="Push even if tag has moved (bypass race protection)"),
 ):
     """Push tracked files to registry."""
     try:
@@ -437,9 +438,17 @@ def push(
     # Execute push
     console.print("\n[bold]Pushing files...[/bold]")
     try:
-        manifest_digest = ops_push(config, tracked, tag=tag, ctx=ctx)
+        manifest_digest = ops_push(config, tracked, tag=tag, ctx=ctx, force=force)
         console.print(f"[green]✓[/green] Pushed successfully")
         console.print(f"[dim]Digest: {manifest_digest[:16]}...[/dim]")
+    except RuntimeError as e:
+        # Specific handling for tag race errors
+        if "Tag" in str(e) and "has moved" in str(e):
+            console.print(f"[red]✗[/red] {e}")
+            console.print("[yellow]Hint: Use --force to override if you're sure you want to push[/yellow]")
+        else:
+            console.print(f"[red]✗[/red] Push failed: {e}")
+        raise typer.Exit(1)
     except Exception as e:
         console.print(f"[red]✗[/red] Push failed: {e}")
         raise typer.Exit(1)

@@ -27,6 +27,18 @@ from modelops_bundle.utils import compute_digest
 from tests.test_registry_utils import skip_if_no_registry
 
 
+# Base mock adapter for tests
+class BaseMockAdapter:
+    """Base mock adapter with common methods."""
+    def __init__(self, remote=None):
+        self.remote = remote
+    def resolve_tag_to_digest(self, ref, tag):
+        # Return the actual manifest digest if we have remote state
+        if hasattr(self, 'remote') and self.remote:
+            return self.remote.manifest_digest
+        return f"sha256:{'0' * 64}"  # Fake digest
+
+
 REGISTRY_AVAILABLE = os.environ.get("REGISTRY_URL", "localhost:5555")
 
 
@@ -101,16 +113,18 @@ class TestPullMirrorSemantics:
         pulled_files = []
         
         # Mock adapter that records what gets pulled
-        class MockAdapter:
+        class MockAdapter(BaseMockAdapter):
+            def __init__(self):
+                super().__init__(remote)
             def get_remote_state(self, ref, tag):
                 return remote
             
-            def pull_files(self, ref, tag, outdir, ctx=None):
+            def pull_files(self, registry_ref=None, reference=None, output_dir=None, ctx=None, **kwargs):
                 # Record that pull_files was called (mirrors ALL remote files)
                 # In real implementation, this pulls EVERYTHING from remote
                 for path in remote.files.keys():
                     pulled_files.append(path)
-                    file_path = outdir / path
+                    file_path = output_dir / path
                     file_path.parent.mkdir(parents=True, exist_ok=True)
                     
                     if path == "unchanged.txt":
@@ -210,15 +224,17 @@ class TestPullMirrorSemantics:
         # Track what gets pulled
         files_pulled = set()
         
-        class MockAdapter:
+        class MockAdapter(BaseMockAdapter):
+            def __init__(self):
+                super().__init__(remote)
             def get_remote_state(self, ref, tag):
                 return remote
             
-            def pull_files(self, ref, tag, outdir, ctx=None):
+            def pull_files(self, registry_ref=None, reference=None, output_dir=None, ctx=None, **kwargs):
                 # Mirror behavior: pulls ALL files from remote
                 for path in remote.files.keys():
                     files_pulled.add(path)
-                    file_path = outdir / path
+                    file_path = output_dir / path
                     if path == "file1.txt":
                         file_path.write_text("content1")
                     elif path == "file2.txt":
@@ -291,14 +307,16 @@ class TestPullMirrorSemantics:
             }
         )
         
-        class MockAdapter:
+        class MockAdapter(BaseMockAdapter):
+            def __init__(self):
+                super().__init__(remote)
             def get_remote_state(self, ref, tag):
                 return remote
             
-            def pull_files(self, ref, tag, outdir, ctx=None):
+            def pull_files(self, registry_ref=None, reference=None, output_dir=None, ctx=None, **kwargs):
                 # Create all remote files
                 for path, file_info in remote.files.items():
-                    file_path = outdir / path
+                    file_path = output_dir / path
                     file_path.parent.mkdir(parents=True, exist_ok=True)
                     file_path.write_text(f"content of {path}")
         

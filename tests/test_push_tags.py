@@ -67,6 +67,7 @@ class TestPushToNewTag:
             
             # Mock: New tag doesn't exist in registry
             adapter.get_remote_state.side_effect = Exception("Tag not found")
+            adapter.get_current_tag_digest.return_value = None  # Tag doesn't exist
             
             # Mock: Push succeeds
             adapter.push_files.return_value = "sha256:newdigest"
@@ -85,7 +86,9 @@ class TestPushToNewTag:
                 call_args = adapter.push_files.call_args
                 
                 # Check that all tracked files were included
-                pushed_files = call_args[0][1]  # Second positional arg is files
+                # push_files is called with keyword arguments
+                pushed_files = call_args.kwargs.get('files')
+                assert pushed_files is not None
                 assert len(pushed_files) == 2
                 assert any(f.path == "file1.txt" for f in pushed_files)
                 assert any(f.path == "file2.txt" for f in pushed_files)
@@ -117,6 +120,7 @@ class TestPushToNewTag:
                 manifest_digest="sha256:existingdigest",
                 files=remote_files
             )
+            adapter.get_current_tag_digest.return_value = "sha256:existingdigest"  # Tag exists
             
             # Mock: Sync state matches remote (using REAL digests)
             sync_state = SyncState()
@@ -160,6 +164,7 @@ class TestSyncStateBugs:
             
             # Mock push succeeds
             adapter.push_files.return_value = "sha256:newdigest"
+            adapter.get_current_tag_digest.return_value = "sha256:olddigest"  # Existing tag
             
             saved_state = None
             def capture_state(state, ctx):

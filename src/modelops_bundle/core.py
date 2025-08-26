@@ -1,4 +1,16 @@
-"""Core data models for modelops-bundle."""
+"""Core data models for modelops-bundle.
+
+Two-Phase Plan/Apply Pattern for Tag Race Prevention:
+------------------------------------------------------
+Tags in registries are mutable and can change between preview and execution.
+We use a two-phase pattern to prevent races:
+
+1. Plan Phase: Resolve tags to immutable digests, capture current state
+2. Apply Phase: Execute using resolved digests, verify state unchanged
+
+This ensures operations are atomic and predictable - what you preview
+is exactly what you get, even if tags move concurrently.
+"""
 
 from enum import Enum
 from pathlib import Path
@@ -19,7 +31,7 @@ class BundleConfig(BaseModel):
     
     registry_ref: str  # e.g. localhost:5555/epi_model
     default_tag: str = "latest"
-    artifact_type: str = "application/vnd.modelops.bundle.v1"
+    # TODO: Add artifact_type when oras-py supports setting it in manifests
 
 
 # ============= File Tracking =============
@@ -136,8 +148,8 @@ class DiffResult(BaseModel):
             counts[change.change_type] = counts.get(change.change_type, 0) + 1
         return counts
     
-    def to_push_plan(self) -> "PushPlan":
-        """Convert diff to push plan."""
+    def to_push_plan(self, tag: str = "latest", tag_base_digest: Optional[str] = None) -> "PushPlan":
+        """Convert diff to push plan with tag tracking."""
         manifest_files = []  # ALL files except DELETED_LOCAL
         to_upload = []       # Only changed files
         unchanged = []       # Unchanged paths for UI
@@ -155,6 +167,8 @@ class DiffResult(BaseModel):
         
         total_size = sum(f.size for f in to_upload)
         return PushPlan(
+            tag=tag,
+            tag_base_digest=tag_base_digest,
             manifest_files=manifest_files,
             files_to_upload=to_upload,
             files_unchanged=unchanged,
@@ -162,8 +176,10 @@ class DiffResult(BaseModel):
             total_upload_size=total_size
         )
     
-    def to_pull_preview(self, overwrite: bool = False) -> "PullPreview":
-        """Generate preview of what pull would do."""
+    def to_pull_preview(self, overwrite: bool = False,
+                        resolved_digest: str = "",
+                        original_reference: str = "") -> "PullPreview":
+        """Generate preview with resolved digest for race-free execution."""
         conflicts = []
         will_delete_local = []
         will_update_or_add = []
@@ -200,6 +216,8 @@ class DiffResult(BaseModel):
         total_size = sum(f.size for f in will_update_or_add)
         
         return PullPreview(
+            resolved_digest=resolved_digest,
+            original_reference=original_reference,
             conflicts=conflicts,
             will_delete_local=will_delete_local,
             will_update_or_add=will_update_or_add,
@@ -210,7 +228,11 @@ class DiffResult(BaseModel):
 # ============= Execution Plans =============
 
 class PushPlan(BaseModel):
-    """Plan for push operation."""
+    """Push plan with tag_base_digest to detect concurrent tag updates."""
+    
+    # Tag race prevention
+    tag: str = "latest"
+    tag_base_digest: Optional[str] = None  # Current digest when plan was created
     
     manifest_files: List[FileInfo]      # ALL files for manifest (excludes DELETED_LOCAL)
     files_to_upload: List[FileInfo]     # Subset that changed (ADDED/MODIFIED_LOCAL)
@@ -228,7 +250,11 @@ class PushPlan(BaseModel):
 
 
 class PullPreview(BaseModel):
-    """Preview of what a pull operation would do (immutable analysis)."""
+    """Pull preview with resolved_digest to ensure exactly what's previewed gets pulled."""
+    
+    # Race prevention - the resolved reference
+    resolved_digest: str
+    original_reference: str
     
     conflicts: List[str] = Field(default_factory=list)  # Files with conflicts
     will_delete_local: List[str] = Field(default_factory=list)  # Files that would be deleted locally

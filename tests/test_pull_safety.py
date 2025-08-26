@@ -29,6 +29,18 @@ from modelops_bundle.working_state import TrackedWorkingState
 from tests.test_registry_utils import skip_if_no_registry
 
 
+# Base mock adapter for tests
+class BaseMockAdapter:
+    """Base mock adapter with common methods."""
+    def __init__(self, remote=None):
+        self.remote = remote
+    def resolve_tag_to_digest(self, ref, tag):
+        # Return the actual manifest digest if we have remote state
+        if hasattr(self, 'remote') and self.remote:
+            return self.remote.manifest_digest
+        return f"sha256:{'0' * 64}"  # Fake digest
+
+
 # Skip if no registry available
 REGISTRY_AVAILABLE = os.environ.get("REGISTRY_URL", "localhost:5555")
 
@@ -201,10 +213,12 @@ class TestPullSafetyGuards:
         )
         
         # Mock adapter to return our remote state
-        class MockAdapter:
+        class MockAdapter(BaseMockAdapter):
+            def __init__(self):
+                super().__init__(remote)
             def get_remote_state(self, ref, tag):
                 return remote
-            def pull_files(self, ref, tag, outdir, ctx=None):
+            def pull_files(self, registry_ref=None, reference=None, output_dir=None, ctx=None, **kwargs):
                 pass  # Would pull files
         
         # Patch the OrasAdapter
@@ -262,10 +276,12 @@ class TestPullSafetyGuards:
         )
         
         # Mock adapter
-        class MockAdapter:
+        class MockAdapter(BaseMockAdapter):
+            def __init__(self):
+                super().__init__(remote)
             def get_remote_state(self, ref, tag):
                 return remote
-            def pull_files(self, ref, tag, outdir, ctx=None):
+            def pull_files(self, registry_ref=None, reference=None, output_dir=None, ctx=None, **kwargs):
                 pass
         
         import modelops_bundle.ops
@@ -314,10 +330,12 @@ class TestPullSafetyGuards:
         )
         
         # Mock adapter
-        class MockAdapter:
+        class MockAdapter(BaseMockAdapter):
+            def __init__(self):
+                super().__init__(remote)
             def get_remote_state(self, ref, tag):
                 return remote
-            def pull_files(self, ref, tag, outdir, ctx=None):
+            def pull_files(self, registry_ref=None, reference=None, output_dir=None, ctx=None, **kwargs):
                 pass
         
         import modelops_bundle.ops
@@ -392,14 +410,16 @@ class TestPullSafetyGuards:
         pull_called = []
         
         # Mock adapter
-        class MockAdapter:
+        class MockAdapter(BaseMockAdapter):
+            def __init__(self):
+                super().__init__(remote)
             def get_remote_state(self, ref, tag):
                 return remote
-            def pull_files(self, ref, tag, outdir, ctx=None):
+            def pull_files(self, registry_ref=None, reference=None, output_dir=None, ctx=None, **kwargs):
                 pull_called.append(True)
                 # Simulate pulling remote files
-                (outdir / "modified.txt").write_text("original content")
-                (outdir / "conflict.txt").write_text("remote version")
+                (output_dir / "modified.txt").write_text("original content")
+                (output_dir / "conflict.txt").write_text("remote version")
         
         import modelops_bundle.ops
         original_adapter = modelops_bundle.ops.OrasAdapter

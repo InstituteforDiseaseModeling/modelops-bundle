@@ -78,9 +78,18 @@ class TestManifestOperations:
         manifest2 = ops_push(config2, tracked2, ctx=ctx2)
         assert manifest2
         
-        # In our fixed implementation, manifests should be equal
-        # if files and digests are identical
-        assert manifest1 == manifest2
+        # With optimization, the second push is skipped since content is identical
+        # Both pushes return the same manifest digest
+        assert manifest1 == manifest2  # Same due to optimization
+        
+        # But the content (files) should be identical - verify via pull
+        from modelops_bundle.oras import OrasAdapter
+        adapter = OrasAdapter()
+        remote1 = adapter.get_remote_state(registry_ref, "latest")
+        
+        # Both should have the same files
+        assert len(remote1.files) == 1
+        assert "file.txt" in remote1.files
     
     @pytest.mark.integration
     def test_remote_only_files_pruning(self, tmp_path, registry_ref, monkeypatch):
