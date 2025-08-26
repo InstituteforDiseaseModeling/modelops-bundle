@@ -480,12 +480,14 @@ def pull(
     state = load_state(ctx)
     diff = working_state.compute_diff(remote, state)
     
-    # Check for untracked file collisions (same logic as in ops.pull)
+    # Check for untracked file collisions (filter ignored files like ops.pull does)
     untracked_collisions = []
     for path in remote.files:
         local_path = ctx.root / path
         if local_path.exists() and path not in tracked.files:
-            untracked_collisions.append(path)
+            # Only include non-ignored files
+            if not ctx.should_ignore(path):
+                untracked_collisions.append(path)
     
     # Create preview
     preview = diff.to_pull_preview(overwrite)

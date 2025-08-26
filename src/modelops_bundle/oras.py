@@ -4,7 +4,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import hashlib
 import json
+import logging
 import tempfile
+import time
 import warnings
 
 from oras.provider import Registry
@@ -35,14 +37,54 @@ class OrasAdapter:
         """Build full target reference."""
         return f"{registry_ref}:{tag}"
     
-    def get_manifest_with_digest(
+    def _try_head_for_digest(self, container: Container) -> Optional[str]:
+        """Try to get digest via HEAD request (faster, fewer bytes).
+        
+        Returns digest string if found, None otherwise.
+        """
+        try:
+            head_url = f"{self.client.prefix}://{container.manifest_url()}"
+            resp = self.client.do_request(
+                head_url,
+                "HEAD", 
+                headers={"Accept": OCI_ACCEPT},
+            )
+            
+            if resp.status_code == 200:
+                return resp.headers.get("Docker-Content-Digest")
+        except Exception:
+            # HEAD might not be supported, fall back to GET
+            pass
+        return None
+    
+    def get_digest_only(
         self, registry_ref: str, reference: str = "latest"
+    ) -> str:
+        """Get just the digest for a manifest (optimized with HEAD first).
+        
+        Useful when you only need the digest, not the full manifest.
+        """
+        target = self._build_target(registry_ref, reference)
+        container = Container(target)
+        
+        # Try HEAD first (faster, less bytes)
+        digest = self._try_head_for_digest(container)
+        if digest:
+            return digest
+        
+        # Fall back to full GET
+        _, digest, _ = self.get_manifest_with_digest(registry_ref, reference)
+        return digest
+    
+    def get_manifest_with_digest(
+        self, registry_ref: str, reference: str = "latest", retries: int = 3
     ) -> Tuple[dict, str, bytes]:
         """
         Return (manifest_json, canonical_digest, raw_bytes).
         
         Digest comes from Docker-Content-Digest header when available;
         otherwise it is computed from the exact raw bytes.
+        Includes retry logic for eventual consistency after push.
         """
         target = self._build_target(registry_ref, reference)
         container = Container(target)
@@ -50,30 +92,60 @@ class OrasAdapter:
         # Build the manifest URL path
         get_manifest_url = f"{self.client.prefix}://{container.manifest_url()}"
         
-        # Use oras-py's do_request which handles auth for us
-        resp = self.client.do_request(
-            get_manifest_url,
-            "GET",
-            headers={"Accept": OCI_ACCEPT},
-        )
+        last_error = None
+        for attempt in range(retries):
+            try:
+                # Use oras-py's do_request which handles auth for us
+                resp = self.client.do_request(
+                    get_manifest_url,
+                    "GET",
+                    headers={"Accept": OCI_ACCEPT},
+                )
+                
+                # Check response status
+                if resp.status_code == 404 and attempt < retries - 1:
+                    # Registry might have eventual consistency delay after push
+                    time.sleep(0.2 * (attempt + 1))  # 200ms, 400ms backoff
+                    continue
+                    
+                if resp.status_code != 200:
+                    resp.raise_for_status()
+                
+                raw = resp.content or b""
+                manifest = resp.json() if raw else {}
+                
+                # Check if this is an index/manifest list
+                media_type = manifest.get("mediaType", "")
+                if "index" in media_type or "list" in media_type or manifest.get("manifests"):
+                    raise ValueError(
+                        f"Reference {target} points to a manifest index/list, not a single artifact. "
+                        "Multi-platform images are not yet supported."
+                    )
+                
+                digest = resp.headers.get("Docker-Content-Digest")
+                if not digest:
+                    # Fallback: compute from raw bytes exactly as served
+                    digest = f"sha256:{hashlib.sha256(raw).hexdigest()}"
+                    # Use logging instead of warnings for better CLI integration
+                    logger = logging.getLogger(__name__)
+                    logger.warning(
+                        f"Registry did not return Docker-Content-Digest for {target}; "
+                        "using digest computed from raw manifest bytes."
+                    )
+                
+                return manifest, digest, raw
+                
+            except Exception as e:
+                last_error = e
+                if attempt < retries - 1 and "404" in str(e):
+                    time.sleep(0.2 * (attempt + 1))
+                    continue
+                raise
         
-        # Check response status
-        if resp.status_code != 200:
-            resp.raise_for_status()
-        
-        raw = resp.content or b""
-        manifest = resp.json() if raw else {}
-        
-        digest = resp.headers.get("Docker-Content-Digest")
-        if not digest:
-            # Fallback: compute from raw bytes exactly as served
-            digest = f"sha256:{hashlib.sha256(raw).hexdigest()}"
-            warnings.warn(
-                f"Registry did not return Docker-Content-Digest for {target}; "
-                "using digest computed from raw manifest bytes."
-            )
-        
-        return manifest, digest, raw
+        # Should not reach here, but be defensive
+        if last_error:
+            raise last_error
+        raise RuntimeError(f"Failed to fetch manifest after {retries} attempts")
     
     def _create_path_annotations(self, files: List[FileInfo]) -> dict:
         """Create annotation mapping to preserve full paths.
@@ -150,7 +222,8 @@ class OrasAdapter:
         
         # 2) Fall back to GET manifest (header + bytes) for canonical digest
         if not digest:
-            _, digest, _ = self.get_manifest_with_digest(registry_ref, tag)
+            # Use more retries since we just pushed
+            _, digest, _ = self.get_manifest_with_digest(registry_ref, tag, retries=5)
         
         return digest
     
@@ -196,9 +269,25 @@ class OrasAdapter:
             # Registry might be empty or unreachable
             raise RuntimeError(f"Failed to fetch manifest: {e}")
         
+        # Guard against index/manifest list
+        if manifest.get("manifests"):
+            raise ValueError(
+                f"Cannot get remote state for manifest index/list at {registry_ref}:{tag}. "
+                "This appears to be a multi-platform image, not a ModelOps bundle."
+            )
+        
         # Parse manifest to extract file info
         files = {}
-        for layer in manifest.get("layers", []):
+        layers = manifest.get("layers", [])
+        if not layers and not manifest.get("config"):
+            # Might be an index that slipped through
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                f"Manifest at {registry_ref}:{tag} has no layers. "
+                "It might be an index or empty manifest."
+            )
+        
+        for layer in layers:
             annotations = layer.get("annotations", {})
             title = annotations.get("org.opencontainers.image.title")
             

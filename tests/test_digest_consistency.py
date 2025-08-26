@@ -151,15 +151,33 @@ class TestDigestConsistency:
                 
                 monkeypatch.setattr(adapter.client, 'do_request', mock_do_request)
             
-                # Should warn about missing header
-                with warnings.catch_warnings(record=True) as w:
-                    warnings.simplefilter("always")
+                # Should log warning about missing header
+                import logging
+                # Capture log output
+                import io
+                import sys
+                
+                # Set up logging to capture warnings
+                logger = logging.getLogger('modelops_bundle.oras')
+                old_level = logger.level
+                logger.setLevel(logging.WARNING)
+                
+                # Create a string buffer to capture log output
+                log_capture = io.StringIO()
+                handler = logging.StreamHandler(log_capture)
+                handler.setLevel(logging.WARNING)
+                logger.addHandler(handler)
+                
+                try:
                     manifest, digest, raw = adapter.get_manifest_with_digest(registry_ref, "test")
                     
-                    # Check that warning was issued
-                    assert len(w) == 1
-                    assert "Docker-Content-Digest" in str(w[0].message)
-                    assert "using digest computed from raw manifest bytes" in str(w[0].message)
+                    # Check that warning was logged
+                    log_output = log_capture.getvalue()
+                    assert "Docker-Content-Digest" in log_output
+                    assert "using digest computed from raw manifest bytes" in log_output
+                finally:
+                    logger.removeHandler(handler)
+                    logger.setLevel(old_level)
             finally:
                 os.chdir(old_cwd)
     
@@ -215,5 +233,147 @@ class TestDigestConsistency:
                 # Verify it's a proper sha256 digest
                 assert digest1.startswith("sha256:")
                 assert len(digest1) == 71  # "sha256:" + 64 hex chars
+            finally:
+                os.chdir(old_cwd)
+    
+    def test_head_optimization_for_digest(self, registry_ref):
+        """Test that HEAD optimization works for getting digest only."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            old_cwd = Path.cwd()
+            try:
+                os.chdir(tmpdir)
+                
+                # Create and push a test file
+                test_file = Path("test.txt")
+                test_file.write_text("test")
+                files = [FileInfo(
+                    path="test.txt",
+                    digest=compute_digest(test_file),
+                    size=test_file.stat().st_size
+                )]
+                
+                adapter = OrasAdapter()
+                push_digest = adapter.push_files(
+                    registry_ref=registry_ref,
+                    files=files,
+                    tag="head-test",
+                    ctx=type('Context', (), {'root': Path.cwd()})()
+                )
+                
+                # Use get_digest_only which should try HEAD first
+                digest_only = adapter.get_digest_only(registry_ref, "head-test")
+                
+                # Should match the push digest
+                assert digest_only == push_digest
+                assert digest_only.startswith("sha256:")
+            finally:
+                os.chdir(old_cwd)
+    
+    def test_retry_on_eventual_consistency(self, registry_ref, monkeypatch):
+        """Test retry logic handles eventual consistency after push."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            old_cwd = Path.cwd()
+            try:
+                os.chdir(tmpdir)
+                
+                # Create and push a test file
+                test_file = Path("test.txt")
+                test_file.write_text("consistency test")
+                files = [FileInfo(
+                    path="test.txt",
+                    digest=compute_digest(test_file),
+                    size=test_file.stat().st_size
+                )]
+                
+                adapter = OrasAdapter()
+                adapter.push_files(
+                    registry_ref=registry_ref,
+                    files=files,
+                    tag="retry-test",
+                    ctx=type('Context', (), {'root': Path.cwd()})()
+                )
+                
+                # Mock to simulate 404 on first attempt, success on second
+                original_do_request = adapter.client.do_request
+                call_count = [0]
+                
+                def mock_do_request(*args, **kwargs):
+                    call_count[0] += 1
+                    if call_count[0] == 1 and "GET" in args:
+                        # Simulate 404 on first GET
+                        resp = type('Response', (), {
+                            'status_code': 404,
+                            'raise_for_status': lambda: None
+                        })()
+                        return resp
+                    return original_do_request(*args, **kwargs)
+                
+                monkeypatch.setattr(adapter.client, 'do_request', mock_do_request)
+                
+                # Should retry and succeed
+                manifest, digest, raw = adapter.get_manifest_with_digest(
+                    registry_ref, "retry-test", retries=3
+                )
+                
+                assert manifest is not None
+                assert digest.startswith("sha256:")
+                # Should have made at least 2 attempts
+                assert call_count[0] >= 2
+            finally:
+                os.chdir(old_cwd)
+    
+    def test_index_manifest_detection(self, registry_ref, monkeypatch):
+        """Test that index/manifest list is detected and raises error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            old_cwd = Path.cwd()
+            try:
+                os.chdir(tmpdir)
+                
+                # Create normal bundle first
+                test_file = Path("test.txt")
+                test_file.write_text("test")
+                files = [FileInfo(
+                    path="test.txt",
+                    digest=compute_digest(test_file),
+                    size=test_file.stat().st_size
+                )]
+                
+                adapter = OrasAdapter()
+                adapter.push_files(
+                    registry_ref=registry_ref,
+                    files=files,
+                    tag="normal",
+                    ctx=type('Context', (), {'root': Path.cwd()})()
+                )
+                
+                # Mock to return an index manifest
+                original_do_request = adapter.client.do_request
+                
+                def mock_do_request(*args, **kwargs):
+                    resp = original_do_request(*args, **kwargs)
+                    # Check if this is a GET request for manifest
+                    if len(args) > 1 and "GET" in args[1] and "manifests" in args[0]:
+                        # Inject index manifest structure
+                        original_json = resp.json
+                        def mock_json():
+                            data = original_json()
+                            # Make it look like an index
+                            data["mediaType"] = "application/vnd.oci.image.index.v1+json"
+                            data["manifests"] = [{"digest": "sha256:fake"}]
+                            return data
+                        resp.json = mock_json
+                    return resp
+                
+                monkeypatch.setattr(adapter.client, 'do_request', mock_do_request)
+                
+                # This should detect index and raise error
+                with pytest.raises(ValueError) as exc:
+                    adapter.get_manifest_with_digest(registry_ref, "normal")
+                
+                assert "manifest index/list" in str(exc.value)
+                assert "not a single artifact" in str(exc.value)
             finally:
                 os.chdir(old_cwd)
