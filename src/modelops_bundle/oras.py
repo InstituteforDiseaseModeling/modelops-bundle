@@ -81,6 +81,9 @@ class OrasAdapter:
             }
             
             # Push with ORAS
+            # Note: artifact_type is part of OCI Image Manifest v1.1.0 spec
+            # but oras-py doesn't directly support setting it via push parameters.
+            # It would need to be set in the manifest after creation.
             response = self.client.push(
                 target=target,
                 files=file_refs,

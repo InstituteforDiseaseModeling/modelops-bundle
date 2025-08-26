@@ -41,11 +41,12 @@ def compute_diff(
         last_digest = last_sync.last_synced_files.get(path)
         remote_file = remote.files.get(path)
         
-        if last_digest is None:
-            # Never synced - skip (file was added then deleted before sync)
+        if last_digest is None and not remote_file:
+            # Never synced and doesn't exist remotely - skip
+            # (file was added then deleted before any sync)
             continue
             
-        if remote_file and remote_file.digest != last_digest:
+        if remote_file and last_digest and remote_file.digest != last_digest:
             # Remote changed since last sync, local deleted -> CONFLICT
             change_type = ChangeType.CONFLICT
         else:

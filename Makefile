@@ -4,7 +4,7 @@
 # testing, and Docker service management.
 
 .DEFAULT_GOAL := help
-.PHONY: help up down reset-registry ps sample-project sample-project-named
+.PHONY: help up down reset-registry ps sample-project sample-project-named clean-sample
 
 help: ## Show this help message
 	@echo 'modelops-bundle dev commands'
@@ -70,5 +70,10 @@ sample-project-named: ## Create a named sample project (use NAME=project_name)
 	@dev/create_sample_project.sh $(NAME)
 	@echo ""
 	@echo "📊 Sample project created at: dev/sample_projects/$(NAME)/"
+
+clean-sample: ## Clean and recreate the epi_model sample project
+	@echo "🧹 Cleaning sample project..."
+	@rm -rf dev/sample_projects/epi_model
+	@$(MAKE) sample-project
 
 

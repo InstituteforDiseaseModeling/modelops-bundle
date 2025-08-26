@@ -174,7 +174,10 @@ class DiffResult(BaseModel):
                 else:
                     conflicts.append(change.path)
             elif change.change_type == ChangeType.MODIFIED_LOCAL:
-                to_skip.append(change.path)
+                if overwrite and change.remote:
+                    to_download.append(change.remote)  # Force download remote version
+                else:
+                    to_skip.append(change.path)  # Keep local changes
         
         total_size = sum(f.size for f in to_download)
         return PullPlan(

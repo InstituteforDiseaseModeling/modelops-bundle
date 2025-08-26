@@ -12,7 +12,7 @@ from .core import (
     ChangeType,
     TrackedFiles,
 )
-from .utils import humanize_size
+from .utils import humanize_size, humanize_date, format_iso_date
 from .ops import (
     load_config,
     load_state,
@@ -122,6 +122,8 @@ def remove(
     # Remove files
     removed = []
     deleted = []
+    not_tracked = []
+    
     for file in files:
         # Convert to project-relative path
         try:
@@ -136,9 +138,17 @@ def remove(
                     if abs_path.exists():
                         abs_path.unlink()
                         deleted.append(rel_path)
+            else:
+                # File not tracked - collect for error message
+                not_tracked.append(file)
         except ValueError:
             # File outside project
-            pass
+            not_tracked.append(file)
+    
+    # Error if any files weren't tracked (match git behavior)
+    if not_tracked:
+        console.print(f"[red]✗[/red] pathspec '{not_tracked[0]}' did not match any tracked files")
+        raise typer.Exit(1)
     
     # Save
     save_tracked(tracked, ctx)
@@ -210,7 +220,7 @@ def status():
         status_map = {
             ChangeType.UNCHANGED: "[green]✓[/green] unchanged",
             ChangeType.ADDED_LOCAL: "[green]+[/green] new",
-            ChangeType.ADDED_REMOTE: "[blue]↓[/blue] remote only",
+            ChangeType.ADDED_REMOTE: "[blue]↓[/blue] remote only (untracked)",
             ChangeType.MODIFIED_LOCAL: "[yellow]M[/yellow] modified locally",
             ChangeType.MODIFIED_REMOTE: "[blue]↓[/blue] modified remotely",
             ChangeType.DELETED_LOCAL: "[red]-[/red] deleted locally",
@@ -249,6 +259,10 @@ def status():
             )
         
         console.print("\n", table)
+        
+        # Show hint about remote-only files
+        if summary.added_remote > 0:
+            console.print(f"\n[dim]💡 Tip: Push will prune {summary.added_remote} remote-only (untracked) file{'s' if summary.added_remote != 1 else ''} from the manifest[/dim]")
         
         # Show summary line
         if summary.unchanged > 10:
@@ -333,20 +347,30 @@ def push(
         for path in plan.deletes:
             console.print(f"  [red]-[/red] {path}")
     
+    # Check if manifest differs (remote has extra files we don't track)
+    manifest_differs = False
+    remote_only_paths = []
+    if remote:
+        local_manifest = {(f.path, f.digest) for f in plan.manifest_files}
+        remote_manifest = {(p, fi.digest) for p, fi in remote.files.items()}
+        manifest_differs = (local_manifest != remote_manifest)
+        if manifest_differs:
+            local_paths = {f.path for f in plan.manifest_files}
+            remote_only_paths = sorted(set(remote.files.keys()) - local_paths)
+    
+    # If dry-run, show what would happen (including prunes), but don't push
     if dry_run:
+        if remote_only_paths:
+            console.print("\n[red]Remote-only files that would be pruned:[/red]")
+            for p in remote_only_paths:
+                console.print(f"  [red]-[/red] {p}")
         console.print("\n[dim]Dry run - no changes made[/dim]")
         return
     
-    # Only skip if no uploads AND no deletions
-    if not plan.files_to_upload and not plan.deletes:
-        # Additionally check manifest equality to catch edge cases
-        if remote:
-            local_manifest = {(f.path, f.digest) for f in plan.manifest_files}
-            remote_manifest = {(p, fi.digest) for p, fi in remote.files.items()}
-            if local_manifest == remote_manifest:
-                console.print("\n[green]✓[/green] Everything up to date")
-                return
-        # otherwise fall through and push to replace manifest
+    # Only skip if there is truly nothing to do:
+    if not plan.files_to_upload and not plan.deletes and not manifest_differs:
+        console.print("\n[green]✓[/green] Everything up to date")
+        return
     
     # No confirmation by default - push directly
     target = f"{config.registry_ref}:{tag or config.default_tag}"
@@ -366,6 +390,7 @@ def push(
 def pull(
     tag: Optional[str] = typer.Option(None, help="Tag to pull"),
     overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite local changes"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be pulled"),
 ):
     """Pull bundle from registry."""
     try:
@@ -417,8 +442,14 @@ def pull(
         console.print("\n[red]Conflicts (use --overwrite to force):[/red]")
         for path in plan.conflicts:
             console.print(f"  [red]⚠[/red] {path}")
-        console.print("\n[red]✗[/red] Pull aborted due to conflicts")
-        raise typer.Exit(1)
+        if not dry_run:
+            console.print("\n[red]✗[/red] Pull aborted due to conflicts")
+            raise typer.Exit(1)
+    
+    # If dry-run, show what would happen but don't pull
+    if dry_run:
+        console.print("\n[dim]Dry run - no changes made[/dim]")
+        return
     
     # Only skip if no downloads AND no deletions
     if not plan.files_to_download and not plan.files_to_delete_local:
@@ -486,7 +517,13 @@ def manifest(
         if manifest.get("annotations"):
             console.print("\n[bold]Annotations:[/bold]")
             for key, value in manifest["annotations"].items():
-                console.print(f"  {key}: {value}")
+                # Show human-readable date for creation timestamp
+                if key == "org.opencontainers.image.created":
+                    clean_date = format_iso_date(value)
+                    human_date = humanize_date(value)
+                    console.print(f"  Created: {clean_date} ([cyan]{human_date}[/cyan])")
+                else:
+                    console.print(f"  {key}: {value}")
         
         # Layers (files)
         console.print(f"\n[bold]Files ({len(remote.files)}):[/bold]")
@@ -530,15 +567,22 @@ def manifest(
             
             for tag in tags:
                 try:
-                    # Get manifest to find its digest
+                    # Get manifest to find its digest and metadata
                     remote = adapter.get_remote_state(config.registry_ref, tag)
+                    manifest = adapter.get_manifest(config.registry_ref, tag)
                     digest = remote.manifest_digest
+                    
+                    # Extract creation date from annotations
+                    created = None
+                    if manifest.get("annotations"):
+                        created = manifest["annotations"].get("org.opencontainers.image.created")
                     
                     if digest not in manifest_groups:
                         manifest_groups[digest] = {
                             "tags": [],
                             "files": len(remote.files),
-                            "size": sum(f.size for f in remote.files.values())
+                            "size": sum(f.size for f in remote.files.values()),
+                            "created": created
                         }
                     manifest_groups[digest]["tags"].append(tag)
                 except Exception as e:
@@ -563,6 +607,10 @@ def manifest(
                     short_digest = digest
                 console.print(f"[cyan]{short_digest}[/cyan] ({', '.join(tag_list)})")
                 console.print(f"  Files: {info['files']} ({humanize_size(info['size'])})")
+                if info.get('created'):
+                    clean_date = format_iso_date(info['created'])
+                    human_date = humanize_date(info['created'])
+                    console.print(f"  Created: {clean_date} ([dim]{human_date}[/dim])")
                 console.print()
             
             if tag_errors:
