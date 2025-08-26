@@ -1,9 +1,11 @@
 """ORAS adapter for OCI registry operations."""
 
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+import hashlib
 import json
 import tempfile
+import warnings
 
 from oras.provider import Registry
 from oras.container import Container
@@ -12,6 +14,14 @@ from .context import ProjectContext
 from .constants import BUNDLE_VERSION
 from .core import FileInfo, RemoteState
 from .utils import get_iso_timestamp
+
+# OCI media types for manifest accept headers
+OCI_ACCEPT = ",".join([
+    "application/vnd.oci.image.manifest.v1+json",
+    "application/vnd.docker.distribution.manifest.v2+json",
+    "application/vnd.oci.image.index.v1+json",
+    "application/vnd.docker.distribution.manifest.list.v2+json",
+])
 
 
 class OrasAdapter:
@@ -24,6 +34,46 @@ class OrasAdapter:
     def _build_target(self, registry_ref: str, tag: str) -> str:
         """Build full target reference."""
         return f"{registry_ref}:{tag}"
+    
+    def get_manifest_with_digest(
+        self, registry_ref: str, reference: str = "latest"
+    ) -> Tuple[dict, str, bytes]:
+        """
+        Return (manifest_json, canonical_digest, raw_bytes).
+        
+        Digest comes from Docker-Content-Digest header when available;
+        otherwise it is computed from the exact raw bytes.
+        """
+        target = self._build_target(registry_ref, reference)
+        container = Container(target)
+        
+        # Build the manifest URL path
+        get_manifest_url = f"{self.client.prefix}://{container.manifest_url()}"
+        
+        # Use oras-py's do_request which handles auth for us
+        resp = self.client.do_request(
+            get_manifest_url,
+            "GET",
+            headers={"Accept": OCI_ACCEPT},
+        )
+        
+        # Check response status
+        if resp.status_code != 200:
+            resp.raise_for_status()
+        
+        raw = resp.content or b""
+        manifest = resp.json() if raw else {}
+        
+        digest = resp.headers.get("Docker-Content-Digest")
+        if not digest:
+            # Fallback: compute from raw bytes exactly as served
+            digest = f"sha256:{hashlib.sha256(raw).hexdigest()}"
+            warnings.warn(
+                f"Registry did not return Docker-Content-Digest for {target}; "
+                "using digest computed from raw manifest bytes."
+            )
+        
+        return manifest, digest, raw
     
     def _create_path_annotations(self, files: List[FileInfo]) -> dict:
         """Create annotation mapping to preserve full paths.
@@ -91,15 +141,16 @@ class OrasAdapter:
                 manifest_annotations=manifest_annotations,
             )
         
-        # Fetch the manifest to get the correct digest
-        # The response headers may not always include Docker-Content-Digest,
-        # so we fetch the manifest to compute it ourselves
-        manifest = self.get_manifest(registry_ref, tag)
+        # 1) Try digest from push response headers
+        digest = None
+        try:
+            digest = getattr(response, "headers", {}).get("Docker-Content-Digest")
+        except Exception:
+            pass
         
-        # Compute manifest digest (canonical JSON hash)
-        import hashlib
-        manifest_bytes = json.dumps(manifest, sort_keys=True).encode()
-        digest = f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
+        # 2) Fall back to GET manifest (header + bytes) for canonical digest
+        if not digest:
+            _, digest, _ = self.get_manifest_with_digest(registry_ref, tag)
         
         return digest
     
@@ -130,14 +181,7 @@ class OrasAdapter:
         tag: str = "latest"
     ) -> dict:
         """Get manifest from registry."""
-        target = self._build_target(registry_ref, tag)
-        
-        # Parse as container
-        container = Container(target)
-        
-        # Get manifest using provider method
-        manifest = self.client.get_manifest(container)
-        
+        manifest, _, _ = self.get_manifest_with_digest(registry_ref, tag)
         return manifest
     
     def get_remote_state(
@@ -147,7 +191,7 @@ class OrasAdapter:
     ) -> RemoteState:
         """Get remote state from manifest."""
         try:
-            manifest = self.get_manifest(registry_ref, tag)
+            manifest, manifest_digest, _ = self.get_manifest_with_digest(registry_ref, tag)
         except Exception as e:
             # Registry might be empty or unreachable
             raise RuntimeError(f"Failed to fetch manifest: {e}")
@@ -164,11 +208,6 @@ class OrasAdapter:
                     digest=layer["digest"],
                     size=layer["size"]
                 )
-        
-        # Get manifest digest (compute if not available)
-        import hashlib
-        manifest_bytes = json.dumps(manifest, sort_keys=True).encode()
-        manifest_digest = f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
         
         return RemoteState(
             manifest_digest=manifest_digest,
