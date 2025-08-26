@@ -2,7 +2,6 @@
 
 from pathlib import Path
 from typing import List, Optional
-import sys
 
 import typer
 from rich.console import Console
@@ -242,13 +241,12 @@ def status():
                     all_items.append((change.path, ChangeType.UNCHANGED, change.local))
         
         for path, change_type, file_info in sorted(all_items):
-            
-            if file_info:
-                table.add_row(
-                    path,
-                    status_map.get(change_type, str(change_type)),
-                    humanize_size(file_info.size) if file_info else "-"
-                )
+            # Always add row, even for deleted files where file_info is None
+            table.add_row(
+                path,
+                status_map.get(change_type, str(change_type)),
+                humanize_size(file_info.size) if file_info else "-"
+            )
         
         console.print("\n", table)
         
@@ -293,6 +291,12 @@ def push(
     # Create working state with deletion tracking
     working_state = TrackedWorkingState.from_tracked(tracked, ctx)
     
+    # Warn about missing tracked files
+    if working_state.missing:
+        console.print("\n[yellow]Warning: Tracked files not found locally:[/yellow]")
+        for path in sorted(working_state.missing):
+            console.print(f"  [yellow]![/yellow] {path}")
+    
     # Get remote state
     adapter = OrasAdapter()
     try:
@@ -333,9 +337,16 @@ def push(
         console.print("\n[dim]Dry run - no changes made[/dim]")
         return
     
-    if not plan.files_to_upload:
-        console.print("\n[green]✓[/green] Everything up to date")
-        return
+    # Only skip if no uploads AND no deletions
+    if not plan.files_to_upload and not plan.deletes:
+        # Additionally check manifest equality to catch edge cases
+        if remote:
+            local_manifest = {(f.path, f.digest) for f in plan.manifest_files}
+            remote_manifest = {(p, fi.digest) for p, fi in remote.files.items()}
+            if local_manifest == remote_manifest:
+                console.print("\n[green]✓[/green] Everything up to date")
+                return
+        # otherwise fall through and push to replace manifest
     
     # No confirmation by default - push directly
     target = f"{config.registry_ref}:{tag or config.default_tag}"
@@ -397,6 +408,11 @@ def pull(
         for file in plan.files_to_download:
             console.print(f"  [blue]↓[/blue] {file.path} ({humanize_size(file.size)})")
     
+    if plan.files_to_delete_local and overwrite:
+        console.print("\n[red]Files to delete locally:[/red]")
+        for path in plan.files_to_delete_local:
+            console.print(f"  [red]-[/red] {path}")
+    
     if plan.conflicts and not overwrite:
         console.print("\n[red]Conflicts (use --overwrite to force):[/red]")
         for path in plan.conflicts:
@@ -404,7 +420,8 @@ def pull(
         console.print("\n[red]✗[/red] Pull aborted due to conflicts")
         raise typer.Exit(1)
     
-    if not plan.files_to_download:
+    # Only skip if no downloads AND no deletions
+    if not plan.files_to_download and not plan.files_to_delete_local:
         console.print("\n[green]✓[/green] Everything up to date")
         return
     
