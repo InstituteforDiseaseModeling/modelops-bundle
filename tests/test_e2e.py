@@ -145,6 +145,73 @@ class TestBundleWorkflow:
         assert original_model == pulled_model
     
     @pytest.mark.integration
+    def test_pull_untracked_collision_protection(self, sample_project, registry_ref):
+        """Test that pull protects untracked files from being overwritten."""
+        os.chdir(sample_project)
+        
+        # Initialize project A with one tracked file
+        from modelops_bundle.context import ProjectContext
+        ctx_a = ProjectContext.init()
+        
+        config = BundleConfig(registry_ref=registry_ref)
+        save_config(config, ctx_a)
+        
+        tracked_a = TrackedFiles()
+        tracked_a.add(Path("src/model.py"))  # Only track model.py
+        save_tracked(tracked_a, ctx_a)
+        
+        # Push from A
+        ops_push(config, tracked_a, ctx=ctx_a)
+        
+        # Create an untracked file in A that will collide
+        untracked_file = sample_project / "secret.txt"
+        untracked_file.write_text("my local secret data")
+        assert untracked_file.exists()
+        
+        # Create project B in different location
+        project_b = sample_project.parent / "project_b"
+        project_b.mkdir()
+        os.chdir(project_b)
+        ctx_b = ProjectContext.init()
+        
+        # Initialize B with same registry
+        save_config(config, ctx_b)
+        
+        # B creates both files (model.py and secret.txt)
+        (project_b / "src").mkdir(parents=True)
+        (project_b / "src" / "model.py").write_text("import torch\n# Model code")
+        (project_b / "secret.txt").write_text("remote secret data")
+        
+        # B tracks both files
+        tracked_b = TrackedFiles()
+        tracked_b.add(Path("src/model.py"), Path("secret.txt"))
+        save_tracked(tracked_b, ctx_b)
+        
+        # B pushes both files
+        ops_push(config, tracked_b, ctx=ctx_b)
+        
+        # Go back to A and try to pull
+        os.chdir(sample_project)
+        
+        # Pull without --overwrite should fail due to untracked collision
+        with pytest.raises(ValueError, match="untracked files would be overwritten"):
+            ops_pull(config, tracked_a, ctx=ctx_a)
+        
+        # Verify untracked file was NOT overwritten
+        assert untracked_file.read_text() == "my local secret data"
+        
+        # Now pull with --overwrite should succeed
+        result = ops_pull(config, tracked_a, overwrite=True, ctx=ctx_a)
+        
+        # Verify untracked file WAS overwritten
+        assert untracked_file.read_text() == "remote secret data"
+        
+        # Verify secret.txt is now tracked
+        tracked_after = load_tracked(ctx_a)
+        assert "secret.txt" in tracked_after.files
+        assert len(tracked_after.files) == 2  # model.py and secret.txt
+    
+    @pytest.mark.integration
     def test_diff_and_sync(self, sample_project, registry_ref):
         """Test diff detection and sync."""
         os.chdir(sample_project)

@@ -25,19 +25,29 @@ class BundleConfig(BaseModel):
 # ============= File Tracking =============
 
 class TrackedFiles(BaseModel):
-    """Tracked files list (stored in .modelops-bundle/tracked)."""
+    """Tracked files list (stored in .modelops-bundle/tracked).
+    
+    All paths are stored as POSIX strings (forward slashes) for consistency
+    across platforms.
+    """
     
     files: Set[str] = Field(default_factory=set)
     
-    def add(self, *paths: Path) -> None:
-        """Add paths to tracking."""
+    def add(self, *paths) -> None:
+        """Add paths to tracking (normalized to POSIX)."""
         for p in paths:
-            self.files.add(str(p))
+            # Convert to Path if string, then to POSIX for cross-platform consistency
+            if isinstance(p, str):
+                p = Path(p)
+            self.files.add(p.as_posix())
     
-    def remove(self, *paths: Path) -> None:
-        """Remove paths from tracking."""
+    def remove(self, *paths) -> None:
+        """Remove paths from tracking (normalized to POSIX)."""
         for p in paths:
-            self.files.discard(str(p))
+            # Convert to Path if string, then normalize to POSIX for consistent lookups
+            if isinstance(p, str):
+                p = Path(p)
+            self.files.discard(p.as_posix())
 
 
 # ============= State Management =============
@@ -152,39 +162,47 @@ class DiffResult(BaseModel):
             total_upload_size=total_size
         )
     
-    def to_pull_plan(self, overwrite: bool = False) -> "PullPlan":
-        """Convert diff to pull plan."""
-        to_download = []
-        to_skip = []
+    def to_pull_preview(self, overwrite: bool = False) -> "PullPreview":
+        """Generate preview of what pull would do."""
         conflicts = []
-        to_delete_local = []
+        will_delete_local = []
+        will_update_or_add = []
         
         for change in self.changes:
+            # Files that would be added or updated from remote
             if change.change_type in (ChangeType.ADDED_REMOTE, ChangeType.MODIFIED_REMOTE):
                 if change.remote:
-                    to_download.append(change.remote)
+                    will_update_or_add.append(change.remote)
+                    
+            # Files that would be deleted locally (remote deleted them)
             elif change.change_type == ChangeType.DELETED_REMOTE:
                 if overwrite:
-                    to_delete_local.append(change.path)
+                    will_delete_local.append(change.path)
                 else:
-                    conflicts.append(change.path)  # Treat as conflict if not overwriting
+                    # Without overwrite, deletion is a conflict
+                    conflicts.append(change.path)
+                    
+            # Conflicting changes
             elif change.change_type == ChangeType.CONFLICT:
                 if overwrite and change.remote:
-                    to_download.append(change.remote)
+                    # With overwrite, remote wins
+                    will_update_or_add.append(change.remote)
                 else:
                     conflicts.append(change.path)
+                    
+            # Local modifications
             elif change.change_type == ChangeType.MODIFIED_LOCAL:
                 if overwrite and change.remote:
-                    to_download.append(change.remote)  # Force download remote version
-                else:
-                    to_skip.append(change.path)  # Keep local changes
+                    # With overwrite, remote replaces local
+                    will_update_or_add.append(change.remote)
+                # Without overwrite, local changes block the pull (handled by safety guards)
         
-        total_size = sum(f.size for f in to_download)
-        return PullPlan(
-            files_to_download=to_download,
-            files_to_skip=to_skip,
+        total_size = sum(f.size for f in will_update_or_add)
+        
+        return PullPreview(
             conflicts=conflicts,
-            files_to_delete_local=to_delete_local,
+            will_delete_local=will_delete_local,
+            will_update_or_add=will_update_or_add,
             total_download_size=total_size
         )
 
@@ -209,22 +227,50 @@ class PushPlan(BaseModel):
         return ", ".join(parts)
 
 
-class PullPlan(BaseModel):
-    """Plan for pull operation."""
+class PullPreview(BaseModel):
+    """Preview of what a pull operation would do (immutable analysis)."""
     
-    files_to_download: List[FileInfo]
-    files_to_skip: List[str]
-    conflicts: List[str]
-    files_to_delete_local: List[str] = Field(default_factory=list)  # DELETED_REMOTE paths
+    conflicts: List[str] = Field(default_factory=list)  # Files with conflicts
+    will_delete_local: List[str] = Field(default_factory=list)  # Files that would be deleted locally
+    will_update_or_add: List[FileInfo] = Field(default_factory=list)  # Files that would be added/updated
+    will_overwrite_untracked: List[str] = Field(default_factory=list)  # Untracked files that would be overwritten
     total_download_size: int = 0
     
     def summary(self) -> str:
         """Get human-readable summary."""
-        parts = [f"↓ {len(self.files_to_download)} files to download ({humanize_size(self.total_download_size)})"]
+        parts = []
+        
+        # Show what would be downloaded
+        if self.will_update_or_add:
+            parts.append(f"↓ {len(self.will_update_or_add)} files ({humanize_size(self.total_download_size)})")
+        else:
+            parts.append("No changes")
+            
+        # Show conflicts and deletions
         if self.conflicts:
             parts.append(f"⚠ {len(self.conflicts)} conflicts")
-        if self.files_to_skip:
-            parts.append(f"{len(self.files_to_skip)} skipped")
-        if self.files_to_delete_local:
-            parts.append(f"{len(self.files_to_delete_local)} to delete locally")
+        if self.will_delete_local:
+            parts.append(f"{len(self.will_delete_local)} to delete locally")
+        if self.will_overwrite_untracked:
+            parts.append(f"⚠ {len(self.will_overwrite_untracked)} untracked files to overwrite")
+            
+        return ", ".join(parts)
+    
+    def has_destructive_changes(self) -> bool:
+        """Check if this pull would destroy local data."""
+        return bool(self.conflicts or self.will_delete_local or self.will_overwrite_untracked)
+
+
+class PullResult(BaseModel):
+    """Result of a completed pull operation."""
+    
+    downloaded: int = 0  # Number of files downloaded
+    deleted: int = 0  # Number of local files deleted
+    manifest_digest: str  # Digest of pulled manifest
+    
+    def summary(self) -> str:
+        """Get human-readable summary."""
+        parts = [f"✓ Pulled {self.downloaded} files"]
+        if self.deleted:
+            parts.append(f"deleted {self.deleted} local files")
         return ", ".join(parts)

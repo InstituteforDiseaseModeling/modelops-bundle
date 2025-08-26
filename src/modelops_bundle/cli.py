@@ -68,6 +68,7 @@ def init(
 @app.command()
 def add(
     files: List[Path] = typer.Argument(..., help="Files to track"),
+    force: bool = typer.Option(False, "--force", help="Add ignored files anyway"),
 ):
     """Add files to tracking."""
     try:
@@ -81,14 +82,25 @@ def add(
     
     # Add files
     added = []
+    skipped_ignored = []
+    
     for file in files:
         # Check if file exists (handles both absolute and relative paths)
         file_path = Path(file)
         if not file_path.exists():
             console.print(f"[red]✗[/red] File not found: {file}")
             continue
+        
         # Store as project-relative path
         rel_path = ctx.resolve(file)
+        
+        # Check if file is ignored (unless --force is used)
+        if not force and ctx.should_ignore(rel_path):
+            console.print(f"[yellow]⚠[/yellow] The following path is ignored by .modelopsignore:")
+            console.print(f"  {rel_path}")
+            skipped_ignored.append(rel_path)
+            continue
+        
         tracked.add(rel_path)
         added.append(rel_path)
     
@@ -100,7 +112,11 @@ def add(
         console.print(f"[green]✓[/green] Tracking {len(added)} files:")
         for file in added:
             console.print(f"  [green]+[/green] {file}")
-    else:
+    
+    if skipped_ignored:
+        console.print(f"\n[dim]Hint: Use --force to add ignored files anyway.[/dim]")
+    
+    if not added and not skipped_ignored:
         console.print("[yellow]No files added[/yellow]")
 
 
@@ -171,7 +187,11 @@ def remove(
 
 
 @app.command()
-def status():
+def status(
+    untracked: bool = typer.Option(False, "-u", "--untracked", help="Show untracked files"),
+    untracked_only: bool = typer.Option(False, "--untracked-only", help="Show only untracked files"),
+    include_ignored: bool = typer.Option(False, "--include-ignored", help="Include ignored files"),
+):
     """Show bundle status."""
     try:
         ctx = ProjectContext()
@@ -187,13 +207,16 @@ def status():
         console.print("[red]✗[/red] Bundle not properly initialized")
         raise typer.Exit(1)
     
-    # Display bundle info
-    console.print(f"[bold]Bundle:[/bold] {config.registry_ref}:{config.default_tag}")
-    console.print(f"[bold]Tracked files:[/bold] {len(tracked.files)}")
+    # Display bundle info (unless --untracked-only)
+    if not untracked_only:
+        console.print(f"[bold]Bundle:[/bold] {config.registry_ref}:{config.default_tag}")
+        console.print(f"[bold]Tracked files:[/bold] {len(tracked.files)}")
     
-    if not tracked.files:
+    if not tracked.files and not untracked_only:
         console.print("\n[yellow]No tracked files. Use 'add' to track files.[/yellow]")
-        return
+        # Still show untracked if requested
+        if not untracked:
+            return
     
     # Create working state with deletion tracking
     working_state = TrackedWorkingState.from_tracked(tracked, ctx)
@@ -208,7 +231,8 @@ def status():
     # Get status summary
     summary = working_state.get_status(remote, state)
     
-    if remote and summary:
+    # Show tracked files table (unless --untracked-only)
+    if not untracked_only and remote and summary:
         
         # Create status table
         table = Table(title="File Status")
@@ -221,9 +245,9 @@ def status():
             ChangeType.UNCHANGED: "[green]✓[/green] unchanged",
             ChangeType.ADDED_LOCAL: "[green]+[/green] new",
             ChangeType.ADDED_REMOTE: "[blue]↓[/blue] remote only (untracked)",
-            ChangeType.MODIFIED_LOCAL: "[yellow]M[/yellow] modified locally",
+            ChangeType.MODIFIED_LOCAL: "[yellow]Δ[/yellow] modified locally",
             ChangeType.MODIFIED_REMOTE: "[blue]↓[/blue] modified remotely",
-            ChangeType.DELETED_LOCAL: "[red]-[/red] deleted locally",
+            ChangeType.DELETED_LOCAL: "[red]−[/red] deleted locally",
             ChangeType.DELETED_REMOTE: "[blue]×[/blue] deleted remotely",
             ChangeType.CONFLICT: "[red]⚠[/red] conflict",
         }
@@ -262,12 +286,12 @@ def status():
         
         # Show hint about remote-only files
         if summary.added_remote > 0:
-            console.print(f"\n[dim]💡 Tip: Push will prune {summary.added_remote} remote-only (untracked) file{'s' if summary.added_remote != 1 else ''} from the manifest[/dim]")
+            console.print(f"\n[dim]Tip: Push will prune {summary.added_remote} remote-only (untracked) file{'s' if summary.added_remote != 1 else ''} from the manifest[/dim]")
         
         # Show summary line
         if summary.unchanged > 10:
             console.print(f"\n[dim]Plus {summary.unchanged} unchanged files[/dim]")
-    else:
+    elif not untracked_only and not remote:
         # Just show local files
         console.print("\n[bold]Local files:[/bold]")
         for path, file_info in working_state.files.items():
@@ -275,8 +299,43 @@ def status():
         if working_state.has_deletions():
             console.print(f"\n[red]Deleted locally ({len(working_state.missing)} files):[/red]")
             for path in sorted(working_state.missing):
-                console.print(f"  [red]-[/red] {path}")
+                console.print(f"  [red]−[/red] {path}")
         console.print("\n[yellow]Remote not accessible or empty[/yellow]")
+    
+    # Show untracked files if requested (or if include_ignored is set)
+    if untracked or untracked_only or include_ignored:
+        from .working_state import scan_untracked
+        
+        untracked_files = scan_untracked(ctx, tracked, include_ignored=include_ignored)
+        
+        if untracked_files:
+            # Create untracked table
+            untracked_table = Table(title="Untracked files")
+            untracked_table.add_column("File", style="cyan")
+            untracked_table.add_column("Status")
+            untracked_table.add_column("Size", justify="right")
+            
+            # Show max 200 files
+            display_files = untracked_files[:200]
+            for file in display_files:
+                status = "[dim](ignored)[/dim]" if file.ignored else "[yellow]?[/yellow] untracked"
+                untracked_table.add_row(
+                    file.path,
+                    status,
+                    humanize_size(file.size)
+                )
+            
+            console.print("\n", untracked_table)
+            
+            if len(untracked_files) > 200:
+                console.print(f"\n[dim]... and {len(untracked_files) - 200} more files[/dim]")
+            
+            console.print("\n[dim]Add files with: modelops-bundle add <path>[/dim]")
+        else:
+            if untracked_only:
+                console.print("[dim]No untracked files found[/dim]")
+            else:
+                console.print("\n[dim]No untracked files found[/dim]")
 
 
 @app.command()
@@ -421,26 +480,42 @@ def pull(
     state = load_state(ctx)
     diff = working_state.compute_diff(remote, state)
     
-    # Create plan
-    plan = diff.to_pull_plan(overwrite)
+    # Check for untracked file collisions (same logic as in ops.pull)
+    untracked_collisions = []
+    for path in remote.files:
+        local_path = ctx.root / path
+        if local_path.exists() and path not in tracked.files:
+            untracked_collisions.append(path)
     
-    # Display plan
+    # Create preview
+    preview = diff.to_pull_preview(overwrite)
+    
+    # Add untracked collisions to preview if overwrite is enabled
+    if overwrite and untracked_collisions:
+        preview.will_overwrite_untracked = untracked_collisions
+    
+    # Display preview
     console.print("[bold]Analyzing changes...[/bold]")
-    console.print(plan.summary())
+    console.print(preview.summary())
     
-    if plan.files_to_download:
-        console.print("\n[yellow]Changes from remote:[/yellow]")
-        for file in plan.files_to_download:
+    if preview.will_update_or_add:
+        console.print("\n[yellow]Files from remote:[/yellow]")
+        for file in preview.will_update_or_add:
             console.print(f"  [blue]↓[/blue] {file.path} ({humanize_size(file.size)})")
     
-    if plan.files_to_delete_local and overwrite:
+    if preview.will_delete_local and overwrite:
         console.print("\n[red]Files to delete locally:[/red]")
-        for path in plan.files_to_delete_local:
+        for path in preview.will_delete_local:
             console.print(f"  [red]-[/red] {path}")
     
-    if plan.conflicts and not overwrite:
+    if preview.will_overwrite_untracked and overwrite:
+        console.print("\n[yellow]Untracked files to overwrite:[/yellow]")
+        for path in preview.will_overwrite_untracked:
+            console.print(f"  [yellow]![/yellow] {path}")
+    
+    if preview.conflicts and not overwrite:
         console.print("\n[red]Conflicts (use --overwrite to force):[/red]")
-        for path in plan.conflicts:
+        for path in preview.conflicts:
             console.print(f"  [red]⚠[/red] {path}")
         if not dry_run:
             console.print("\n[red]✗[/red] Pull aborted due to conflicts")
@@ -451,22 +526,20 @@ def pull(
         console.print("\n[dim]Dry run - no changes made[/dim]")
         return
     
-    # Only skip if no downloads AND no deletions
-    if not plan.files_to_download and not plan.files_to_delete_local:
+    # Check if there's anything to do
+    if not preview.will_update_or_add and not preview.will_delete_local:
         console.print("\n[green]✓[/green] Everything up to date")
         return
     
     # Show warning if overwriting
-    if overwrite and plan.conflicts:
+    if overwrite and preview.has_destructive_changes():
         console.print("\n[red]Warning: Overwriting local changes![/red]")
     
-    # Execute pull
-    console.print("\n[bold]Pulling files...[/bold]")
+    # Execute pull (mirror operation)
+    console.print("\n[bold]Pulling files (full mirror)...[/bold]")
     try:
-        executed_plan = ops_pull(config, tracked, tag=tag, overwrite=overwrite, ctx=ctx)
-        console.print(f"[green]✓[/green] Pulled successfully")
-        if executed_plan.files_to_skip:
-            console.print(f"[yellow]Skipped {len(executed_plan.files_to_skip)} files with local changes[/yellow]")
+        result = ops_pull(config, tracked, tag=tag, overwrite=overwrite, ctx=ctx)
+        console.print(f"[green]✓[/green] {result.summary()}")
     except Exception as e:
         console.print(f"[red]✗[/red] Pull failed: {e}")
         raise typer.Exit(1)

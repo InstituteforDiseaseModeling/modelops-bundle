@@ -3,13 +3,15 @@
 from pathlib import Path
 from typing import List, Optional
 import json
+import time
 import yaml
 
 from .context import ProjectContext
 
 from .core import (
     BundleConfig,
-    PullPlan,
+    PullPreview,
+    PullResult,
     PushPlan,
     RemoteState,
     SyncState,
@@ -162,8 +164,8 @@ def pull(
     tag: Optional[str] = None,
     overwrite: bool = False,
     ctx: Optional[ProjectContext] = None
-) -> PullPlan:
-    """Execute pull operation and return executed plan."""
+) -> PullResult:
+    """Execute pull operation and return result."""
     if ctx is None:
         ctx = ProjectContext()
     
@@ -180,39 +182,96 @@ def pull(
     # Compute diff with automatic deletion handling
     diff = working_state.compute_diff(remote, state)
     
-    # Create pull plan
-    plan = diff.to_pull_plan(overwrite)
+    # CRITICAL: Check for untracked file collisions BEFORE creating preview
+    # Pull will write ALL remote files, potentially overwriting untracked local files
+    # BUT: Ignored files can be overwritten without warning (like .pyc, node_modules, etc.)
+    untracked_collisions = []
+    for path in remote.files:
+        local_path = ctx.root / path
+        if local_path.exists() and path not in tracked.files:
+            # Only count as collision if NOT ignored
+            # Ignored untracked files can be overwritten safely
+            if not ctx.should_ignore(path):
+                untracked_collisions.append(path)
     
-    if plan.conflicts and not overwrite:
-        # Don't execute if there are conflicts - require explicit --overwrite
-        raise ValueError(f"Pull would overwrite {len(plan.conflicts)} local changes. Use --overwrite to force.")
+    # Generate preview of what would happen
+    preview = diff.to_pull_preview(overwrite)
     
-    if not plan.files_to_download and not plan.files_to_delete_local:
-        return plan  # Nothing to change
+    # Add untracked collisions to preview if overwrite is enabled
+    if overwrite and untracked_collisions:
+        preview.will_overwrite_untracked = untracked_collisions
     
-    # Execute pull
-    if plan.files_to_download:
-        adapter.pull_files(config.registry_ref, tag or config.default_tag, ctx.root, ctx=ctx)
+    # Safety guards: check for potentially destructive changes
+    from .core import ChangeType
+    
+    # Find all potentially destructive changes
+    local_mods = [c.path for c in diff.changes if c.change_type == ChangeType.MODIFIED_LOCAL]
+    remote_deletes = [c.path for c in diff.changes if c.change_type == ChangeType.DELETED_REMOTE]
+    conflicts = [c.path for c in diff.changes if c.change_type == ChangeType.CONFLICT]
+    
+    # Block pull without --overwrite if any destructive changes would occur
+    if not overwrite and (conflicts or local_mods or remote_deletes or untracked_collisions):
+        error_parts = []
+        if conflicts:
+            error_parts.append(f"{len(conflicts)} conflicts")
+        if local_mods:
+            error_parts.append(f"{len(local_mods)} locally modified")
+        if remote_deletes:
+            error_parts.append(f"{len(remote_deletes)} would be deleted")
+        if untracked_collisions:
+            error_parts.append(f"{len(untracked_collisions)} untracked files would be overwritten")
+        
+        raise ValueError(
+            f"Pull would overwrite or delete local changes: {', '.join(error_parts)}. "
+            "Use --overwrite to force."
+        )
+    
+    # Check if there's anything to do
+    if not preview.will_update_or_add and not preview.will_delete_local:
+        # Nothing to change
+        return PullResult(
+            downloaded=0,
+            deleted=0,
+            manifest_digest=remote.manifest_digest
+        )
+    
+    # Execute full mirror pull (safe because we checked guards above)
+    # This mirrors the remote state completely
+    adapter.pull_files(config.registry_ref, tag or config.default_tag, ctx.root, ctx=ctx)
     
     # Delete local files if requested (DELETED_REMOTE with overwrite=True)
-    for path in plan.files_to_delete_local:
+    deleted_count = 0
+    for path in preview.will_delete_local:
         file_path = ctx.root / path
         if file_path.exists():
             file_path.unlink()
+            deleted_count += 1
         # Remove from tracked files
         tracked.remove(Path(path))
     
-    # Update sync state
-    state.update_after_pull(remote.manifest_digest, plan.files_to_download)
-    # Remove deleted files from sync state
-    for path in plan.files_to_delete_local:
-        state.last_synced_files.pop(path, None)
+    # Update sync state to reflect the full mirror
+    # Since we did a full mirror pull, state should reflect ALL remote files
+    state.last_pull_digest = remote.manifest_digest
+    state.last_synced_files = {}
+    for path, file_info in remote.files.items():
+        # Only add files that weren't deleted locally
+        if path not in preview.will_delete_local:
+            state.last_synced_files[path] = file_info.digest
+    state.timestamp = time.time()
     save_state(state, ctx)
     
-    # Update tracked files with new files from remote
-    for file_info in plan.files_to_download:
-        tracked.add(Path(file_info.path))
+    # Update tracked files to match remote (full mirror)
+    # Rebuild tracking from scratch to match remote exactly
+    tracked.files.clear()  # Clear all existing tracked files
+    for path in remote.files.keys():
+        if path not in preview.will_delete_local:
+            tracked.add(Path(path))
     save_tracked(tracked, ctx)
     
-    return plan
+    # Return result of what actually happened
+    return PullResult(
+        downloaded=len(remote.files),  # We downloaded all remote files (mirror)
+        deleted=deleted_count,
+        manifest_digest=remote.manifest_digest
+    )
 

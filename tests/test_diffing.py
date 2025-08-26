@@ -66,16 +66,17 @@ class TestDiffingLogic:
         change = diff_result.changes[0]
         assert change.change_type == ChangeType.MODIFIED_LOCAL
         
-        # Test pull plan WITHOUT overwrite - should skip
-        pull_plan = diff_result.to_pull_plan(overwrite=False)
-        assert len(pull_plan.files_to_download) == 0
-        assert "test.txt" in pull_plan.files_to_skip
+        # Test pull preview WITHOUT overwrite - local changes preserved
+        pull_preview = diff_result.to_pull_preview(overwrite=False)
+        assert len(pull_preview.will_update_or_add) == 0  # Nothing downloaded
+        assert len(pull_preview.conflicts) == 0  # Not a conflict, just local mod
+        # Note: MODIFIED_LOCAL without overwrite blocks the entire pull operation
         
-        # Test pull plan WITH overwrite - should download
-        pull_plan_overwrite = diff_result.to_pull_plan(overwrite=True)
-        assert len(pull_plan_overwrite.files_to_download) == 1
-        assert pull_plan_overwrite.files_to_download[0].path == "test.txt"
-        assert len(pull_plan_overwrite.files_to_skip) == 0
+        # Test pull preview WITH overwrite - should download remote
+        pull_preview_overwrite = diff_result.to_pull_preview(overwrite=True)
+        assert len(pull_preview_overwrite.will_update_or_add) == 1
+        assert pull_preview_overwrite.will_update_or_add[0].path == "test.txt"
+        assert len(pull_preview_overwrite.conflicts) == 0
     
     def test_file_added_deleted_before_sync(self, tmp_path):
         """Test that files added and deleted before any sync don't cause errors."""
@@ -165,15 +166,15 @@ class TestDiffingLogic:
         assert change.change_type == ChangeType.CONFLICT
         
         # Without overwrite, should be in conflicts
-        pull_plan = diff_result.to_pull_plan(overwrite=False)
-        assert "conflict.txt" in pull_plan.conflicts
-        assert len(pull_plan.files_to_download) == 0
+        pull_preview = diff_result.to_pull_preview(overwrite=False)
+        assert "conflict.txt" in pull_preview.conflicts
+        assert len(pull_preview.will_update_or_add) == 0
         
         # With overwrite, should download remote version
-        pull_plan_overwrite = diff_result.to_pull_plan(overwrite=True)
-        assert len(pull_plan_overwrite.conflicts) == 0
-        assert len(pull_plan_overwrite.files_to_download) == 1
-        assert pull_plan_overwrite.files_to_download[0].path == "conflict.txt"
+        pull_preview_overwrite = diff_result.to_pull_preview(overwrite=True)
+        assert len(pull_preview_overwrite.conflicts) == 0
+        assert len(pull_preview_overwrite.will_update_or_add) == 1
+        assert pull_preview_overwrite.will_update_or_add[0].path == "conflict.txt"
     
     def test_deleted_remote_handling(self, tmp_path):
         """Test handling of files deleted on remote."""
@@ -208,14 +209,14 @@ class TestDiffingLogic:
         assert change.change_type == ChangeType.DELETED_REMOTE
         
         # Without overwrite, should be conflict
-        pull_plan = diff_result.to_pull_plan(overwrite=False)
-        assert "local_only.txt" in pull_plan.conflicts
-        assert len(pull_plan.files_to_delete_local) == 0
+        pull_preview = diff_result.to_pull_preview(overwrite=False)
+        assert "local_only.txt" in pull_preview.conflicts
+        assert len(pull_preview.will_delete_local) == 0
         
         # With overwrite, should delete locally
-        pull_plan_overwrite = diff_result.to_pull_plan(overwrite=True)
-        assert len(pull_plan_overwrite.conflicts) == 0
-        assert "local_only.txt" in pull_plan_overwrite.files_to_delete_local
+        pull_preview_overwrite = diff_result.to_pull_preview(overwrite=True)
+        assert len(pull_preview_overwrite.conflicts) == 0
+        assert "local_only.txt" in pull_preview_overwrite.will_delete_local
     
     def test_push_plan_excludes_deleted_local(self, tmp_path):
         """Test that push plans don't include locally deleted files."""

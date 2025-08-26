@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 from .constants import MODELOPS_BUNDLE_DIR
+from .ignore import IgnoreSpec
 
 
 class ProjectContext:
@@ -14,6 +15,7 @@ class ProjectContext:
         self.root = self._find_root(start_path or Path.cwd())
         if not self.root:
             raise ValueError(f"Not inside a modelops-bundle project (no {MODELOPS_BUNDLE_DIR} found)")
+        self._ignore_spec: Optional[IgnoreSpec] = None
     
     @classmethod
     def is_initialized(cls, path: Optional[Path] = None) -> bool:
@@ -87,3 +89,26 @@ class ProjectContext:
         """Get path to sync state file."""
         from .constants import STATE_FILE
         return self.storage_dir / STATE_FILE
+    
+    def get_ignore_spec(self) -> IgnoreSpec:
+        """Get the ignore specification (memoized)."""
+        if self._ignore_spec is None:
+            self._ignore_spec = IgnoreSpec(self.root)
+        return self._ignore_spec
+    
+    def should_ignore(self, relpath: Union[str, Path]) -> bool:
+        """Check if a path should be ignored.
+        
+        Args:
+            relpath: Either a project-relative POSIX string or a Path
+            
+        Returns:
+            True if the path matches ignore patterns
+        """
+        ignore_spec = self.get_ignore_spec()
+        
+        # Convert Path to POSIX string if needed
+        if isinstance(relpath, Path):
+            relpath = relpath.as_posix()
+        
+        return ignore_spec.is_ignored(relpath)

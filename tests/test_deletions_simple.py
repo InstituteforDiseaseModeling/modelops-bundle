@@ -96,12 +96,12 @@ class TestPullDeletions:
         print(f"Change type for data.csv: {changes_by_path['data/data.csv']}")
         assert changes_by_path["data/data.csv"] == ChangeType.DELETED_REMOTE
         
-        # Create pull plan with overwrite
-        pull_plan = diff.to_pull_plan(overwrite=True)
+        # Create pull preview with overwrite
+        pull_preview = diff.to_pull_preview(overwrite=True)
         
-        # Verify the plan includes the deletion
-        assert "data/data.csv" in pull_plan.files_to_delete_local
-        assert len(pull_plan.files_to_delete_local) == 1
+        # Verify the preview includes the deletion
+        assert "data/data.csv" in pull_preview.will_delete_local
+        assert len(pull_preview.will_delete_local) == 1
         
     def test_pull_without_overwrite_skips_remote_deletions(self, sample_project):
         """Test that pull without overwrite doesn't delete files."""
@@ -145,11 +145,11 @@ class TestPullDeletions:
             }
         )
         
-        # Create diff and pull plan without overwrite
+        # Create diff and pull preview without overwrite
         working_state = TrackedWorkingState.from_tracked(tracked, ctx)
         diff = working_state.compute_diff(mock_remote, initial_state)
-        pull_plan = diff.to_pull_plan(overwrite=False)
+        pull_preview = diff.to_pull_preview(overwrite=False)
         
         # Without overwrite, deletions should be treated as conflicts
-        assert len(pull_plan.files_to_delete_local) == 0
-        assert "data/data.csv" in pull_plan.conflicts
+        assert len(pull_preview.will_delete_local) == 0
+        assert "data/data.csv" in pull_preview.conflicts

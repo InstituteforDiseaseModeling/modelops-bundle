@@ -1,6 +1,8 @@
 """Working state abstraction that combines snapshot with deletion tracking."""
 
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Optional, Set
 
 from .context import ProjectContext
@@ -226,3 +228,93 @@ class TrackedWorkingState:
                 )
         
         return summary
+
+
+@dataclass
+class UntrackedFile:
+    """Represents an untracked file in the workspace."""
+    path: str  # Project-relative POSIX path
+    size: int
+    ignored: bool = False
+
+
+def scan_untracked(
+    ctx: ProjectContext,
+    tracked: TrackedFiles,
+    include_ignored: bool = False,
+) -> List[UntrackedFile]:
+    """
+    Scan for untracked files in the project.
+
+    - Respects ignore patterns for discovery.
+    - Never hides tracked files (tracked wins over ignored).
+    - Returns lightweight entries (no hashing).
+    """
+    ignore_spec = ctx.get_ignore_spec()
+    untracked: List[UntrackedFile] = []
+
+    # Normalize tracked paths to POSIX for reliable set membership
+    # This handles Windows backslashes correctly
+    tracked_paths = {Path(p).as_posix() for p in tracked.files}
+
+    # Walk the project tree (use os.walk for Python 3.10/3.11 portability)
+    for root_str, dirs, files in os.walk(ctx.root):
+        root = Path(root_str)
+
+        # Compute project-relative directory path
+        if root == ctx.root:
+            dir_rel = ""
+        else:
+            dir_rel = root.relative_to(ctx.root).as_posix()
+
+        # Prune directories we shouldn't traverse (performance optimization)
+        dirs_to_remove = []
+        for dirname in list(dirs):  # Use list() to avoid modifying while iterating
+            # Always skip .modelops-bundle directory
+            if dirname == ".modelops-bundle":
+                dirs_to_remove.append(dirname)
+                continue
+            
+            # Build directory path
+            dir_path = f"{dir_rel}/{dirname}" if dir_rel else dirname
+            
+            # Check if we should traverse this directory
+            if hasattr(ignore_spec, "should_traverse") and not ignore_spec.should_traverse(dir_path):
+                dirs_to_remove.append(dirname)
+        
+        # Remove directories from traversal
+        for dirname in dirs_to_remove:
+            dirs.remove(dirname)
+
+        # Check each file in current directory
+        for filename in files:
+            # Build project-relative POSIX path
+            rel_path = f"{dir_rel}/{filename}" if dir_rel else filename
+
+            # Skip if tracked (tracked wins over ignored)
+            if rel_path in tracked_paths:
+                continue
+
+            # Check if file matches ignore patterns
+            is_ignored = ignore_spec.is_ignored(rel_path)
+            
+            # Skip ignored files unless explicitly requested
+            if is_ignored and not include_ignored:
+                continue
+
+            # Get file size (lightweight, no hashing)
+            try:
+                size = (root / filename).stat().st_size
+            except OSError:
+                # File might be inaccessible or deleted
+                continue
+
+            untracked.append(UntrackedFile(
+                path=rel_path,
+                size=size,
+                ignored=is_ignored
+            ))
+
+    # Sort by path for consistent display
+    untracked.sort(key=lambda f: f.path)
+    return untracked
