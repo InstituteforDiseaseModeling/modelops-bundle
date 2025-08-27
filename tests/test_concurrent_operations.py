@@ -22,6 +22,8 @@ from modelops_bundle.ops import (
 from modelops_bundle.context import ProjectContext
 from modelops_bundle.utils import compute_digest
 
+from tests.test_registry_utils import skip_if_no_registry
+
 
 def setup_mock_adapter(adapter):
     """Setup common mock methods for OrasAdapter mock."""
@@ -284,18 +286,15 @@ class TestRaceProtectionIntegration:
     """Integration tests for race protection with real registry operations."""
     
     @pytest.mark.integration
-    @pytest.mark.skipif(
-        not os.environ.get("REGISTRY_URL"),
-        reason="Registry not available"
-    )
     def test_real_registry_tag_movement(self, test_project):
         """Test with real registry that tag movement is detected."""
+        skip_if_no_registry()
         ctx, config, tracked = test_project
         
         # This test requires a real registry
         from modelops_bundle.oras import OrasAdapter
         
-        registry_ref = f"{os.environ['REGISTRY_URL']}/test_race_{os.urandom(4).hex()}"
+        registry_ref = f"{os.environ.get('REGISTRY_URL', 'localhost:5555')}/test_race_{os.urandom(4).hex()}"
         config.registry_ref = registry_ref
         
         adapter = OrasAdapter()

@@ -26,6 +26,8 @@ from modelops_bundle.ops import (
 from modelops_bundle.context import ProjectContext
 from modelops_bundle.utils import compute_digest
 
+from tests.test_registry_utils import skip_if_no_registry
+
 
 @pytest.fixture
 def registry_ref():
@@ -73,6 +75,7 @@ class TestPullTagRaces:
     
     def test_pull_tag_moves_between_preview_and_apply(self, registry_ref, test_project):
         """Test that pull uses resolved digest even if tag moves."""
+        skip_if_no_registry()
         ctx, config, tracked = test_project
         config.registry_ref = registry_ref
         
@@ -124,6 +127,7 @@ class TestPullTagRaces:
     
     def test_pull_by_digest_is_immutable(self, registry_ref, test_project):
         """Test that pulling by digest is immune to tag changes."""
+        skip_if_no_registry()
         ctx, config, tracked = test_project
         config.registry_ref = registry_ref
         
@@ -171,6 +175,7 @@ class TestPullTagRaces:
     
     def test_resolve_once_pattern(self, registry_ref, test_project):
         """Test that preview resolves tag exactly once."""
+        skip_if_no_registry()
         ctx, config, tracked = test_project
         config.registry_ref = registry_ref
         
@@ -224,6 +229,7 @@ class TestPushTagRaces:
     
     def test_push_detects_tag_movement(self, registry_ref, test_project):
         """Test that push detects when tag has moved since planning."""
+        skip_if_no_registry()
         ctx, config, tracked = test_project
         config.registry_ref = registry_ref
         
@@ -274,6 +280,7 @@ class TestPushTagRaces:
     
     def test_push_force_overrides_tag_check(self, registry_ref, test_project):
         """Test that --force allows push despite tag movement."""
+        skip_if_no_registry()
         ctx, config, tracked = test_project
         config.registry_ref = registry_ref
         
@@ -318,6 +325,7 @@ class TestPushTagRaces:
     
     def test_push_to_new_tag_no_race_check(self, registry_ref, test_project):
         """Test that pushing to a new tag doesn't trigger race check."""
+        skip_if_no_registry()
         ctx, config, tracked = test_project
         config.registry_ref = registry_ref
         
@@ -341,6 +349,7 @@ class TestManifestIndexDetection:
     
     def test_index_detection_in_pull(self, registry_ref, test_project, monkeypatch):
         """Test that pull detects and rejects manifest indexes."""
+        skip_if_no_registry()
         ctx, config, tracked = test_project
         config.registry_ref = registry_ref
         
@@ -381,6 +390,7 @@ class TestManifestIndexDetection:
     
     def test_manifest_list_detection(self, registry_ref, test_project, monkeypatch):
         """Test detection of Docker manifest lists."""
+        skip_if_no_registry()
         ctx, config, tracked = test_project
         config.registry_ref = registry_ref
         
@@ -425,6 +435,7 @@ class TestDigestOptimizations:
     
     def test_head_optimization_used(self, registry_ref, test_project, monkeypatch):
         """Test that HEAD request is tried before GET for digest-only."""
+        skip_if_no_registry()
         ctx, config, tracked = test_project
         config.registry_ref = registry_ref
         
@@ -467,6 +478,7 @@ class TestDigestOptimizations:
     
     def test_retry_with_backoff(self, registry_ref, test_project, monkeypatch):
         """Test retry logic with exponential backoff."""
+        skip_if_no_registry()
         ctx, config, tracked = test_project
         config.registry_ref = registry_ref
         

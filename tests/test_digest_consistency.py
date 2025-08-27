@@ -10,6 +10,8 @@ from modelops_bundle.oras import OrasAdapter
 from modelops_bundle.core import FileInfo
 from modelops_bundle.utils import compute_digest
 
+from tests.test_registry_utils import skip_if_no_registry
+
 
 @pytest.fixture
 def registry_ref():
@@ -23,6 +25,7 @@ class TestDigestConsistency:
     
     def test_push_and_pull_digest_consistency(self, registry_ref):
         """Test that push returns same digest as get_remote_state."""
+        skip_if_no_registry()
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
             old_cwd = Path.cwd()
@@ -71,6 +74,7 @@ class TestDigestConsistency:
     
     def test_manifest_digest_matches_header(self, registry_ref):
         """Test that our digest matches the registry's Docker-Content-Digest header."""
+        skip_if_no_registry()
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
             old_cwd = Path.cwd()
@@ -115,6 +119,7 @@ class TestDigestConsistency:
     
     def test_digest_fallback_warning(self, registry_ref, monkeypatch, caplog):
         """Test that we warn when Docker-Content-Digest header is missing."""
+        skip_if_no_registry()
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
             old_cwd = Path.cwd()
@@ -168,6 +173,7 @@ class TestDigestConsistency:
     
     def test_digest_consistency_across_operations(self, registry_ref):
         """Test digest consistency across push, pull, and status operations."""
+        skip_if_no_registry()
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
             old_cwd = Path.cwd()
@@ -223,6 +229,7 @@ class TestDigestConsistency:
     
     def test_head_optimization_for_digest(self, registry_ref):
         """Test that HEAD optimization works for getting digest only."""
+        skip_if_no_registry()
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
             old_cwd = Path.cwd()
@@ -257,6 +264,7 @@ class TestDigestConsistency:
     
     def test_retry_on_eventual_consistency(self, registry_ref, monkeypatch):
         """Test retry logic handles eventual consistency after push."""
+        skip_if_no_registry()
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
             old_cwd = Path.cwd()
@@ -311,6 +319,7 @@ class TestDigestConsistency:
     
     def test_index_manifest_detection(self, registry_ref, monkeypatch):
         """Test that index/manifest list is detected and raises error."""
+        skip_if_no_registry()
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
             old_cwd = Path.cwd()

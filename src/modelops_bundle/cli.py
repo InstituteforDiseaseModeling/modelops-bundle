@@ -1,7 +1,7 @@
 """CLI for modelops-bundle."""
 
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import typer
 from rich.console import Console
@@ -12,7 +12,7 @@ from .core import (
     ChangeType,
     TrackedFiles,
 )
-from .utils import humanize_size, humanize_date, format_iso_date
+from .utils import humanize_size, humanize_date, format_iso_date, format_storage_display
 from .ops import (
     load_config,
     load_state,
@@ -24,11 +24,107 @@ from .ops import (
 )
 from .oras import OrasAdapter
 from .working_state import TrackedWorkingState
+from .core import RemoteStatus
 
 
-app = typer.Typer(help="ModelOps Bundle - OCI artifact-based model synchronization")
+app = typer.Typer(help="ModelOps-Bundle - OCI artifact-based model bundle synchronization")
 console = Console()
 
+
+def require_project_context() -> ProjectContext:
+    """Ensure project is initialized and return context."""
+    try:
+        return ProjectContext()
+    except ValueError as e:
+        console.print(f"[red]✗[/red] {e}")
+        console.print()
+        console.print("[dim]Hint: Check you're in the right directory[/dim]")
+        console.print()
+        console.print("To initialize a new project, run:")
+        console.print("  [cyan]uv run modelops-bundle init <registry-ref>[/cyan]")
+        raise typer.Exit(1)
+
+
+def display_remote_status(status: "RemoteStatus", registry_ref: str, reference: str = "latest") -> None:
+    """Display remote status with appropriate messaging."""
+    from .core import RemoteStatus
+    
+    if status == RemoteStatus.AVAILABLE:
+        # Don't display anything for available status (normal case)
+        return
+    elif status == RemoteStatus.EMPTY:
+        console.print(f"[yellow]Remote registry has no content at {registry_ref}:{reference}[/yellow]")
+    elif status == RemoteStatus.UNREACHABLE:
+        console.print(f"[red]Cannot connect to registry at {registry_ref}[/red]")
+        console.print("[dim]Check your network connection and registry URL[/dim]")
+    elif status == RemoteStatus.AUTH_FAILED:
+        console.print(f"[red]Authentication failed for {registry_ref}[/red]")
+        console.print("[dim]Check your credentials or use 'docker login'[/dim]")
+    elif status == RemoteStatus.UNKNOWN_ERROR:
+        console.print(f"[red]Error accessing registry at {registry_ref}:{reference}[/red]")
+
+
+def get_remote_state_with_status(
+    oras: "OrasAdapter",
+    registry_ref: str, 
+    reference: str = "latest"
+) -> Tuple[Optional["RemoteState"], "RemoteStatus"]:
+    """Get remote state and status, handling all error cases cleanly."""
+    from .core import RemoteStatus
+    import requests
+    
+    try:
+        remote_state = oras.get_remote_state(registry_ref, reference)
+        return remote_state, RemoteStatus.AVAILABLE
+    except requests.exceptions.ConnectionError:
+        return None, RemoteStatus.UNREACHABLE
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 404:
+            return None, RemoteStatus.EMPTY
+        elif e.response.status_code in (401, 403):
+            return None, RemoteStatus.AUTH_FAILED
+        else:
+            return None, RemoteStatus.UNKNOWN_ERROR
+    except Exception as e:
+        # Check for specific error patterns in the exception message
+        error_str = str(e).lower()
+        if "404" in error_str or "not found" in error_str:
+            return None, RemoteStatus.EMPTY
+        elif "401" in error_str or "403" in error_str or "auth" in error_str:
+            return None, RemoteStatus.AUTH_FAILED
+        elif "connection" in error_str or "network" in error_str:
+            return None, RemoteStatus.UNREACHABLE
+        else:
+            return None, RemoteStatus.UNKNOWN_ERROR
+
+
+def require_remote(
+    oras: "OrasAdapter",
+    registry_ref: str,
+    reference: str = "latest"
+) -> "RemoteState":
+    """Require remote state to be available, exit with helpful message if not."""
+    from .core import RemoteStatus
+    
+    remote_state, status = get_remote_state_with_status(oras, registry_ref, reference)
+    
+    if status == RemoteStatus.AVAILABLE and remote_state:
+        return remote_state
+    
+    # Display the error
+    display_remote_status(status, registry_ref, reference)
+    
+    # Add helpful hints based on status
+    if status == RemoteStatus.EMPTY:
+        console.print()
+        console.print("To push initial content, run:")
+        console.print(f"  [cyan]uv run modelops-bundle push[/cyan]")
+    elif status == RemoteStatus.UNREACHABLE:
+        console.print()
+        console.print("If using a local registry, ensure it's running:")
+        console.print("  [cyan]make up[/cyan]")
+    
+    raise typer.Exit(1)
 
 
 @app.command()
@@ -153,11 +249,7 @@ def add(
     force: bool = typer.Option(False, "--force", help="Add ignored files anyway"),
 ):
     """Add files to tracking."""
-    try:
-        ctx = ProjectContext()
-    except ValueError as e:
-        console.print(f"[red]✗[/red] {e}")
-        raise typer.Exit(1)
+    ctx = require_project_context()
     
     # Load tracked files
     tracked = load_tracked(ctx)
@@ -208,11 +300,7 @@ def remove(
     rm: bool = typer.Option(False, "--rm", help="Also delete the files from disk"),
 ):
     """Remove files from tracking."""
-    try:
-        ctx = ProjectContext()
-    except ValueError as e:
-        console.print(f"[red]✗[/red] {e}")
-        raise typer.Exit(1)
+    ctx = require_project_context()
     
     # Load tracked files
     tracked = load_tracked(ctx)
@@ -275,11 +363,7 @@ def status(
     include_ignored: bool = typer.Option(False, "--include-ignored", help="Include ignored files"),
 ):
     """Show bundle status."""
-    try:
-        ctx = ProjectContext()
-    except ValueError as e:
-        console.print(f"[red]✗[/red] {e}")
-        raise typer.Exit(1)
+    ctx = require_project_context()
     
     try:
         config = load_config(ctx)
@@ -305,10 +389,11 @@ def status(
     
     # Try to get remote state
     adapter = OrasAdapter()
-    try:
-        remote = adapter.get_remote_state(config.registry_ref, config.default_tag)
-    except Exception:
-        remote = None
+    remote, remote_status = get_remote_state_with_status(adapter, config.registry_ref, config.default_tag)
+    
+    # Display remote status if not available
+    if not untracked_only:
+        display_remote_status(remote_status, config.registry_ref, config.default_tag)
     
     # Get status summary
     summary = working_state.get_status(remote, state)
@@ -321,6 +406,8 @@ def status(
         table.add_column("File", style="cyan")
         table.add_column("Status")
         table.add_column("Size", justify="right")
+        if config.storage and config.storage.enabled:
+            table.add_column("Storage", style="dim")
         
         # Use summary for a cleaner display
         status_map = {
@@ -356,13 +443,53 @@ def status(
                 if change.change_type == ChangeType.UNCHANGED:
                     all_items.append((change.path, ChangeType.UNCHANGED, change.local))
         
+        # Try to get storage info from remote if available
+        storage_info = {}
+        if config.storage and config.storage.enabled and remote:
+            try:
+                # Try to get index for storage info  
+                try:
+                    latest_digest = adapter.resolve_tag_to_digest(config.registry_ref, config.default_tag)
+                    from .storage_models import BundleIndex
+                    index = adapter.get_index(config.registry_ref, latest_digest)
+                    for file_path, entry in index.files.items():
+                        storage_info[file_path] = format_storage_display(
+                            entry.storage, 
+                            config=config,
+                            entry=entry
+                        )
+                except:
+                    pass
+            except:
+                pass
+        
+        # Determine storage for local files based on policy
+        from .storage_models import StorageType
+        
         for path, change_type, file_info in sorted(all_items):
-            # Always add row, even for deleted files where file_info is None
-            table.add_row(
+            # Determine storage location
+            storage = "-"
+            if config.storage and config.storage.enabled:
+                if change_type not in [ChangeType.DELETED_LOCAL, ChangeType.DELETED_REMOTE]:
+                    if path in storage_info:
+                        # Use remote storage info if available
+                        storage = storage_info[path]
+                    elif file_info and config.storage.enabled:
+                        # For local files, classify based on policy
+                        storage_type = config.storage.classify(Path(path), file_info.size)
+                        storage = format_storage_display(storage_type, config=config)
+            
+            # Build row data
+            row_data = [
                 path,
                 status_map.get(change_type, str(change_type)),
                 humanize_size(file_info.size) if file_info else "-"
-            )
+            ]
+            if config.storage and config.storage.enabled:
+                row_data.append(storage)
+            
+            # Always add row, even for deleted files where file_info is None
+            table.add_row(*row_data)
         
         console.print("\n", table)
         
@@ -382,7 +509,6 @@ def status(
             console.print(f"\n[red]Deleted locally ({len(working_state.missing)} files):[/red]")
             for path in sorted(working_state.missing):
                 console.print(f"  [red]−[/red] {path}")
-        console.print("\n[yellow]Remote not accessible or empty[/yellow]")
     
     # Show untracked files if requested (or if include_ignored is set)
     if untracked or untracked_only or include_ignored:
@@ -427,11 +553,7 @@ def push(
     force: bool = typer.Option(False, "--force", help="Push even if tag has moved (bypass race protection)"),
 ):
     """Push tracked files to registry."""
-    try:
-        ctx = ProjectContext()
-    except ValueError as e:
-        console.print(f"[red]✗[/red] {e}")
-        raise typer.Exit(1)
+    ctx = require_project_context()
     
     try:
         config = load_config(ctx)
@@ -453,12 +575,14 @@ def push(
         for path in sorted(working_state.missing):
             console.print(f"  [yellow]![/yellow] {path}")
     
-    # Get remote state
+    # Get remote state (optional for push)
     adapter = OrasAdapter()
-    try:
-        remote = adapter.get_remote_state(config.registry_ref, tag or config.default_tag)
-    except Exception:
-        remote = None
+    remote, remote_status = get_remote_state_with_status(adapter, config.registry_ref, tag or config.default_tag)
+    
+    # Only show status if it's an error other than EMPTY (EMPTY is normal for first push)
+    from .core import RemoteStatus
+    if remote_status not in (RemoteStatus.AVAILABLE, RemoteStatus.EMPTY):
+        display_remote_status(remote_status, config.registry_ref, tag or config.default_tag)
     
     # Compute diff with automatic deletion handling
     state = load_state(ctx)
@@ -482,7 +606,13 @@ def push(
     if plan.files_to_upload:
         console.print("\n[yellow]Changes to push:[/yellow]")
         for file in plan.files_to_upload:
-            console.print(f"  [green]↑[/green] {file.path} ({humanize_size(file.size)})")
+            # Determine storage destination if storage is enabled
+            storage_display = ""
+            if config.storage and config.storage.enabled:
+                from .storage_models import StorageType
+                storage_type = config.storage.classify(Path(file.path), file.size)
+                storage_display = " " + format_storage_display(storage_type, config=config, direction="→")
+            console.print(f"  [green]↑[/green] {file.path} ({humanize_size(file.size)}){storage_display}")
     
     if plan.deletes:
         console.print("\n[red]Files removed from manifest:[/red]")
@@ -543,11 +673,7 @@ def pull(
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be pulled"),
 ):
     """Pull bundle from registry."""
-    try:
-        ctx = ProjectContext()
-    except ValueError as e:
-        console.print(f"[red]✗[/red] {e}")
-        raise typer.Exit(1)
+    ctx = require_project_context()
     
     try:
         config = load_config(ctx)
@@ -556,13 +682,9 @@ def pull(
         console.print("[red]✗[/red] Bundle not properly initialized")
         raise typer.Exit(1)
     
-    # Get remote state
+    # Get remote state (require it to exist for pull)
     adapter = OrasAdapter()
-    try:
-        remote = adapter.get_remote_state(config.registry_ref, tag or config.default_tag)
-    except Exception as e:
-        console.print(f"[red]✗[/red] Failed to fetch remote: {e}")
-        raise typer.Exit(1)
+    remote = require_remote(adapter, config.registry_ref, tag or config.default_tag)
     
     # Create working state with deletion tracking
     working_state = TrackedWorkingState.from_tracked(tracked, ctx)
@@ -593,8 +715,38 @@ def pull(
     
     if preview.will_update_or_add:
         console.print("\n[yellow]Files from remote:[/yellow]")
+        # Try to get storage info from remote index if available
+        storage_info = {}
+        if config.storage and config.storage.enabled:
+            try:
+                from .storage_models import BundleIndex
+                adapter = OrasAdapter()
+                # Use the resolved digest from the preview
+                if hasattr(preview, 'resolved_digest') and preview.resolved_digest:
+                    try:
+                        index = adapter.get_index(config.registry_ref, preview.resolved_digest)
+                        for file_path, entry in index.files.items():
+                            storage_info[file_path] = format_storage_display(
+                                entry.storage,
+                                config=config,
+                                entry=entry,
+                                direction="←"
+                            )
+                    except:
+                        pass
+            except:
+                pass
+        
         for file in preview.will_update_or_add:
-            console.print(f"  [blue]↓[/blue] {file.path} ({humanize_size(file.size)})")
+            storage_display = ""
+            if file.path in storage_info:
+                storage_display = " " + storage_info[file.path]
+            elif config.storage and config.storage.enabled:
+                # Fallback: classify based on policy if no index info
+                from .storage_models import StorageType
+                storage_type = config.storage.classify(Path(file.path), file.size)
+                storage_display = " " + format_storage_display(storage_type, config=config, direction="←")
+            console.print(f"  [blue]↓[/blue] {file.path} ({humanize_size(file.size)}){storage_display}")
     
     if preview.will_delete_local and overwrite:
         console.print("\n[red]Files to delete locally:[/red]")
@@ -645,11 +797,7 @@ def manifest(
     full: bool = typer.Option(False, "--full", help="Show full digests"),
 ):
     """Inspect registry manifests and tags."""
-    try:
-        ctx = ProjectContext()
-    except ValueError as e:
-        console.print(f"[red]✗[/red] {e}")
-        raise typer.Exit(1)
+    ctx = require_project_context()
     
     try:
         config = load_config(ctx)
@@ -661,31 +809,32 @@ def manifest(
     
     # If a specific reference is provided, show its details
     if reference:
-        try:
-            # Resolve to digest for consistency
-            resolved_digest = adapter.resolve_tag_to_digest(config.registry_ref, reference)
-            manifest = adapter.get_manifest(config.registry_ref, resolved_digest)
-            
-            # Try index-based approach first
-            storage_info = {}
-            if config.storage.enabled:
-                try:
-                    from .storage_models import StorageType
-                    index = adapter.get_index(config.registry_ref, resolved_digest)
-                    # Build remote state from index
-                    from .ops import _index_to_remote_state
-                    remote = _index_to_remote_state(index, resolved_digest)
-                    # Store storage info for display
-                    for path, entry in index.files.items():
-                        storage_info[path] = "blob" if entry.storage == StorageType.BLOB else "oci"
-                except ValueError:
-                    # Fall back to legacy
-                    remote = adapter.get_remote_state(config.registry_ref, resolved_digest)
-            else:
-                remote = adapter.get_remote_state(config.registry_ref, resolved_digest)
-        except Exception as e:
-            console.print(f"[red]✗[/red] Failed to fetch manifest for '{reference}': {e}")
-            raise typer.Exit(1)
+        # Get remote state (require it to exist)
+        remote = require_remote(adapter, config.registry_ref, reference)
+        
+        # Resolve to digest for consistency
+        resolved_digest = adapter.resolve_tag_to_digest(config.registry_ref, reference)
+        manifest = adapter.get_manifest(config.registry_ref, resolved_digest)
+        
+        # Try index-based approach first
+        storage_info = {}
+        if config.storage.enabled:
+            try:
+                from .storage_models import StorageType
+                index = adapter.get_index(config.registry_ref, resolved_digest)
+                # Build remote state from index
+                from .ops import _index_to_remote_state
+                remote = _index_to_remote_state(index, resolved_digest)
+                # Store storage info for display
+                for path, entry in index.files.items():
+                    storage_info[path] = format_storage_display(
+                        entry.storage,
+                        config=config,
+                        entry=entry
+                    )
+            except ValueError:
+                # Fall back to legacy (remote already obtained above)
+                pass
         
         # Display manifest info
         console.print(f"\n[bold]Manifest for {config.registry_ref}:{reference}[/bold]")
@@ -737,7 +886,19 @@ def manifest(
         try:
             tags = adapter.list_tags(config.registry_ref)
         except Exception as e:
-            console.print(f"[red]✗[/red] Failed to list tags: {e}")
+            # Handle connection/auth errors gracefully
+            from .core import RemoteStatus
+            import requests
+            
+            if isinstance(e, requests.exceptions.ConnectionError):
+                display_remote_status(RemoteStatus.UNREACHABLE, config.registry_ref)
+            elif isinstance(e, requests.exceptions.HTTPError):
+                if e.response.status_code in (401, 403):
+                    display_remote_status(RemoteStatus.AUTH_FAILED, config.registry_ref)
+                else:
+                    display_remote_status(RemoteStatus.UNKNOWN_ERROR, config.registry_ref)
+            else:
+                display_remote_status(RemoteStatus.UNKNOWN_ERROR, config.registry_ref)
             raise typer.Exit(1)
         
         if not tags:
@@ -756,7 +917,9 @@ def manifest(
             for tag in tags:
                 try:
                     # Get manifest to find its digest and metadata
-                    remote = adapter.get_remote_state(config.registry_ref, tag)
+                    remote, _ = get_remote_state_with_status(adapter, config.registry_ref, tag)
+                    if not remote:
+                        continue
                     manifest = adapter.get_manifest(config.registry_ref, tag)
                     digest = remote.manifest_digest
                     
@@ -815,11 +978,7 @@ def diff(
     tag: Optional[str] = typer.Option(None, help="Tag to compare"),
 ):
     """Show differences between local and remote."""
-    try:
-        ctx = ProjectContext()
-    except ValueError as e:
-        console.print(f"[red]✗[/red] {e}")
-        raise typer.Exit(1)
+    ctx = require_project_context()
     
     try:
         config = load_config(ctx)
@@ -836,11 +995,8 @@ def diff(
     working_state = TrackedWorkingState.from_tracked(tracked, ctx)
     adapter = OrasAdapter()
     
-    try:
-        remote = adapter.get_remote_state(config.registry_ref, tag or config.default_tag)
-    except Exception as e:
-        console.print(f"[red]✗[/red] Failed to fetch remote: {e}")
-        raise typer.Exit(1)
+    # Get remote state (require it to exist for diff)
+    remote = require_remote(adapter, config.registry_ref, tag or config.default_tag)
     
     # Compute diff with automatic deletion handling
     state = load_state(ctx)

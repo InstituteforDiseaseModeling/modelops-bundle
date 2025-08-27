@@ -25,6 +25,7 @@ from modelops_bundle.ops import (
 from modelops_bundle.oras import OrasAdapter
 
 from tests.fixtures.sample_project import create_sample_project, get_expected_files
+from tests.test_registry_utils import skip_if_no_registry
 
 
 # Skip if no registry available
@@ -101,6 +102,7 @@ class TestBundleWorkflow:
     @pytest.mark.integration
     def test_push_and_pull(self, sample_project, registry_ref, monkeypatch):
         """Test pushing and pulling from registry."""
+        skip_if_no_registry()
         monkeypatch.chdir(sample_project)
         
         # Initialize
@@ -147,6 +149,7 @@ class TestBundleWorkflow:
     @pytest.mark.integration
     def test_pull_untracked_collision_protection(self, sample_project, registry_ref, monkeypatch):
         """Test that pull protects untracked files from being overwritten."""
+        skip_if_no_registry()
         monkeypatch.chdir(sample_project)
         
         # Initialize project A with one tracked file
@@ -214,6 +217,7 @@ class TestBundleWorkflow:
     @pytest.mark.integration
     def test_diff_and_sync(self, sample_project, registry_ref, monkeypatch):
         """Test diff detection and sync."""
+        skip_if_no_registry()
         monkeypatch.chdir(sample_project)
         
         # Initialize and track files
@@ -261,6 +265,7 @@ class TestBundleWorkflow:
     @pytest.mark.integration  
     def test_conflict_detection(self, sample_project, registry_ref, monkeypatch):
         """Test conflict detection in 3-way merge."""
+        skip_if_no_registry()
         monkeypatch.chdir(sample_project)
         
         # Initialize
@@ -303,6 +308,7 @@ class TestBundleWorkflow:
 @pytest.mark.integration
 def test_full_workflow_with_cli_commands(sample_project, registry_ref, monkeypatch):
     """Test using actual CLI operations."""
+    skip_if_no_registry()
     import subprocess
     import sys
     

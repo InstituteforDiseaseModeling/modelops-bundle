@@ -92,3 +92,91 @@ def humanize_date(iso_string: str) -> str:
     except (ValueError, AttributeError):
         # If parsing fails, return the original string
         return iso_string
+
+
+def format_storage_display(storage_type, config=None, entry=None, direction=None):
+    """Format storage location for consistent display across CLI commands.
+    
+    Args:
+        storage_type: StorageType enum or string ("oci", "blob", "OCI", "BLOB")
+        config: Optional BundleConfig for provider/container info
+        entry: Optional BundleFileEntry with blobRef for detailed info
+        direction: Optional arrow direction ("→" for push, "←" for pull, None for no arrow)
+    
+    Returns:
+        Formatted string like "→ OCI", "blob/azure:container", etc.
+    """
+    from .storage_models import StorageType
+    
+    # Normalize storage type
+    if isinstance(storage_type, str):
+        storage_type = StorageType.OCI if storage_type.lower() == "oci" else StorageType.BLOB
+    
+    # Build display string
+    if storage_type == StorageType.OCI:
+        display = "OCI"
+    else:
+        # Start with blob
+        display = "blob"
+        
+        # Try to get detailed info from entry's blobRef first
+        if entry and hasattr(entry, 'blobRef') and entry.blobRef and hasattr(entry.blobRef, 'uri'):
+            uri = entry.blobRef.uri
+            if uri.startswith("azure://"):
+                # Extract container from azure://container/path
+                parts = uri.split("/")
+                if len(parts) > 2:
+                    display = f"blob/azure:{parts[2]}"
+            elif uri.startswith("s3://"):
+                # Extract bucket from s3://bucket/path
+                parts = uri.split("/")
+                if len(parts) > 2:
+                    display = f"blob/s3:{parts[2]}"
+            elif uri.startswith("gs://"):
+                # Extract bucket from gs://bucket/path
+                parts = uri.split("/")
+                if len(parts) > 2:
+                    display = f"blob/gcs:{parts[2]}"
+            elif uri.startswith("fs://"):
+                # Extract path from fs://path
+                path = uri[5:]  # Remove fs://
+                if path:
+                    display = f"blob/fs:{path.split('/')[0]}"
+                else:
+                    display = "blob/fs"
+            elif uri.startswith("file://"):
+                # Extract path from file:///path
+                path = uri[7:]  # Remove file://
+                if path.startswith("/"):
+                    # Extract directory path
+                    path_parts = path.split("/")
+                    # Get parent directory (e.g., /shared/storage from /shared/storage/file.txt)
+                    if len(path_parts) > 2:
+                        parent = "/".join(path_parts[:-1])
+                    else:
+                        parent = path
+                    display = f"blob/filesystem:{parent}"
+                else:
+                    display = "blob/filesystem"
+        # Fall back to config if no blobRef
+        elif config and hasattr(config, 'storage') and config.storage.enabled:
+            provider = config.storage.provider
+            container = config.storage.container
+            
+            if provider == "azure" and container:
+                display = f"blob/azure:{container}"
+            elif provider == "s3" and container:
+                display = f"blob/s3:{container}"
+            elif provider == "gcs" and container:
+                display = f"blob/gcs:{container}"
+            elif provider == "fs":
+                if container:
+                    display = f"blob/fs:{container}"
+                else:
+                    display = "blob/fs"
+    
+    # Add direction arrow if specified
+    if direction:
+        display = f"{direction} {display}"
+    
+    return display

@@ -127,6 +127,16 @@ class ChangeType(str, Enum):
     CONFLICT = "conflict"
 
 
+class RemoteStatus(str, Enum):
+    """Status of remote registry connection and content."""
+    
+    AVAILABLE = "available"         # Registry accessible and has content
+    EMPTY = "empty"                 # Registry accessible but no content (404)
+    UNREACHABLE = "unreachable"    # Network/connection error
+    AUTH_FAILED = "auth_failed"     # Authentication/authorization failed (401/403)
+    UNKNOWN_ERROR = "unknown_error" # Other errors
+
+
 class FileChange(BaseModel):
     """Single file change."""
     

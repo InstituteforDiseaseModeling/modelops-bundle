@@ -2,6 +2,8 @@
 
 ## MVP Features
 
+### External Blob Storage & The Hybrid Storage Model
+
 ### GC
 
 **Issue**: Add bundle gc --blob that:
@@ -9,8 +11,6 @@
  - Deletes unreferenced blobs from the store.
 
 ### Role-Layers
-
-### External Blob Storage & The Hybrid Storage Model
 
 ### Async Client?
 
