@@ -19,6 +19,7 @@ import time
 
 from pydantic import BaseModel, Field
 from .utils import humanize_size
+from .policy import StoragePolicy
 
 if TYPE_CHECKING:
     from .snapshot import TrackedFilesSnapshot
@@ -31,6 +32,7 @@ class BundleConfig(BaseModel):
     
     registry_ref: str  # e.g. localhost:5555/epi_model
     default_tag: str = "latest"
+    storage: StoragePolicy = StoragePolicy()  # Default: hybrid mode (auto)
     # TODO: Add artifact_type when oras-py supports setting it in manifests
 
 

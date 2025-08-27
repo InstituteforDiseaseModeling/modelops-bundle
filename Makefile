@@ -4,7 +4,7 @@
 # testing, and Docker service management.
 
 .DEFAULT_GOAL := help
-.PHONY: help up down reset-registry ps sample-project sample-project-named clean-sample
+.PHONY: help up down reset-registry ps sample-project sample-project-named clean-sample setup-azure azure-env
 
 help: ## Show this help message
 	@echo 'modelops-bundle dev commands'
@@ -17,10 +17,15 @@ help: ## Show this help message
 	@echo ''
 	@echo 'Examples:'
 	@echo '  make up                      # Start development services'
+	@echo '  make setup-azure             # Set up Azure blob storage with Azurite'
 	@echo '  make down                    # Stop development services'
 	@echo '  make ps                      # Show service status'
 	@echo '  make sample-project          # Create a sample epidemiological model project for testing'
 	@echo '  make sample-project-named NAME=my_model  # Create a named sample project'
+	@echo ''
+	@echo 'Storage setup:'
+	@echo '  eval $$(make azure-env)      # Set Azure connection string in shell'
+	@echo '  make setup-azure             # Complete Azure storage setup guide'
 
 
 
@@ -75,5 +80,53 @@ clean-sample: ## Clean and recreate the epi_model sample project
 	@echo "🧹 Cleaning sample project..."
 	@rm -rf dev/sample_projects/epi_model
 	@$(MAKE) sample-project
+
+setup-azure: ## Set up Azure blob storage (Azurite) for modelops-bundle
+	@echo "🔧 Setting up Azurite blob storage..."
+	@# Check if Azurite is running
+	@docker ps | grep -q modelops-bundles-azurite || (echo "❌ Azurite not running. Run 'make up' first"; exit 1)
+	@echo "✅ Azurite is running"
+	@echo ""
+	@# Create the container using Azure CLI or curl
+	@echo "📦 Creating modelops-bundles container in Azurite..."
+	@docker exec modelops-bundles-azurite sh -c '\
+		curl -X PUT "http://localhost:10000/devstoreaccount1/modelops-bundles?restype=container" \
+		-H "x-ms-version: 2019-12-12" \
+		-H "x-ms-date: $$(date -u +"%a, %d %b %Y %H:%M:%S GMT")" \
+		2>/dev/null' || true
+	@echo "✅ Container ready"
+	@echo ""
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo "📋 To use Azure storage in your ModelOps Bundle project:"
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo ""
+	@echo "1️⃣  Set the connection string in your shell:"
+	@echo ""
+	@echo "    $$(make -s azure-env)"
+	@echo ""
+	@echo "2️⃣  Initialize a new project with Azure storage:"
+	@echo ""
+	@echo "    modelops-bundle init localhost:5555/my-model --storage-preset azurite"
+	@echo ""
+	@echo "   Or with explicit configuration:"
+	@echo ""
+	@echo "    modelops-bundle init localhost:5555/my-model \\"
+	@echo "      --storage-provider azure \\"
+	@echo "      --storage-container modelops-bundles \\"
+	@echo "      --storage-threshold 10  # 10MB threshold"
+	@echo ""
+	@echo "3️⃣  For existing projects, add to .modelops-bundle/config.yaml:"
+	@echo ""
+	@echo "    storage:"
+	@echo "      provider: azure"
+	@echo "      container: modelops-bundles"
+	@echo "      threshold_bytes: 52428800  # 50MB"
+	@echo ""
+	@echo "💡 Quick start (copy & paste):"
+	@echo "   eval \$$(make azure-env) && modelops-bundle init localhost:5555/test --storage-preset azurite"
+	@echo ""
+
+azure-env: ## Output Azure (Azurite) environment variable for shell
+	@echo 'export AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1"'
 
 

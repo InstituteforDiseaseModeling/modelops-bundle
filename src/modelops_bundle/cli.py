@@ -35,8 +35,17 @@ console = Console()
 def init(
     registry_ref: str = typer.Argument(..., help="Registry reference (e.g., localhost:5555/epi_model)"),
     tag: str = typer.Option("latest", help="Default tag"),
+    storage_provider: Optional[str] = typer.Option(None, "--storage-provider", help="Storage provider (azure, fs, s3, gcs)"),
+    storage_container: Optional[str] = typer.Option(None, "--storage-container", help="Container/bucket name or filesystem path"),
+    storage_prefix: Optional[str] = typer.Option(None, "--storage-prefix", help="Optional key prefix for organization"),
+    storage_threshold: Optional[int] = typer.Option(None, "--storage-threshold", help="Size threshold in MB (default: 50)"),
+    storage_mode: Optional[str] = typer.Option(None, "--storage-mode", help="Storage mode (auto, oci-inline, blob-only)"),
+    storage_preset: Optional[str] = typer.Option(None, "--storage-preset", help="Preset configuration (azurite, local)"),
 ):
     """Initialize a new bundle in the current directory."""
+    import os
+    from .policy import StoragePolicy
+    
     # Check if already initialized in current directory
     if ProjectContext.is_initialized():
         console.print("[red]✗[/red] Already initialized in current directory")
@@ -45,10 +54,71 @@ def init(
     # Initialize project context
     ctx = ProjectContext.init()
     
+    # Handle storage presets
+    if storage_preset:
+        if storage_preset == "azurite":
+            # Azurite preset for local development
+            storage_provider = "azure"
+            storage_container = storage_container or "modelops-bundles"
+            # Check if Azurite connection string is available
+            if "AZURE_STORAGE_CONNECTION_STRING" not in os.environ:
+                # Set the well-known Azurite connection string
+                os.environ["AZURE_STORAGE_CONNECTION_STRING"] = (
+                    "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;"
+                    "AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;"
+                    "BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1"
+                )
+                console.print("[yellow]ℹ[/yellow] Using Azurite connection string")
+        elif storage_preset == "local":
+            # Local filesystem preset for testing
+            storage_provider = "fs"
+            storage_container = storage_container or "/tmp/modelops-storage"
+        else:
+            console.print(f"[red]✗[/red] Unknown storage preset: {storage_preset}")
+            raise typer.Exit(1)
+    
+    # Validate storage configuration
+    if storage_provider:
+        if storage_provider == "azure":
+            if not os.environ.get("AZURE_STORAGE_CONNECTION_STRING"):
+                console.print("[red]✗[/red] Azure storage requires AZURE_STORAGE_CONNECTION_STRING environment variable")
+                console.print("[yellow]💡[/yellow] Set it with: export AZURE_STORAGE_CONNECTION_STRING=\"...\"")
+                console.print("[yellow]💡[/yellow] Or use --storage-preset azurite for local development")
+                raise typer.Exit(1)
+            if not storage_container:
+                console.print("[red]✗[/red] Azure storage requires --storage-container")
+                raise typer.Exit(1)
+        elif storage_provider == "fs":
+            if not storage_container:
+                console.print("[red]✗[/red] Filesystem storage requires --storage-container (absolute path)")
+                raise typer.Exit(1)
+            # Convert to absolute path if relative
+            storage_container = str(Path(storage_container).absolute())
+        elif storage_provider in ["s3", "gcs"]:
+            console.print(f"[yellow]⚠[/yellow] {storage_provider.upper()} storage support coming soon")
+            console.print("[yellow]💡[/yellow] Use azure or fs provider for now")
+            raise typer.Exit(1)
+        elif storage_provider != "":
+            console.print(f"[red]✗[/red] Unknown storage provider: {storage_provider}")
+            console.print("[yellow]💡[/yellow] Valid providers: azure, fs, s3 (future), gcs (future)")
+            raise typer.Exit(1)
+    
+    # Build storage policy
+    storage_policy = None
+    if storage_provider or storage_mode or storage_threshold:
+        storage_policy = StoragePolicy(
+            provider=storage_provider or "",
+            container=storage_container or "",
+            prefix=storage_prefix or "",
+            threshold_bytes=(storage_threshold * 1024 * 1024) if storage_threshold else (50 * 1024 * 1024),
+            mode=storage_mode or "auto"
+        )
+    
     # Create config
     config = BundleConfig(
         registry_ref=registry_ref,
-        default_tag=tag
+        default_tag=tag,
+        storage=storage_policy if storage_policy else StoragePolicy()
     )
     save_config(config, ctx)
     
@@ -63,6 +133,18 @@ def init(
             f.write("\n# ModelOps Bundle\n.modelops-bundle/\n")
     
     console.print(f"[green]✓[/green] Initialized bundle: {registry_ref}")
+    
+    # Show storage configuration if enabled
+    if storage_provider:
+        console.print(f"[green]✓[/green] Storage provider: {storage_provider}")
+        if storage_container:
+            console.print(f"    Container: {storage_container}")
+        if storage_prefix:
+            console.print(f"    Prefix: {storage_prefix}")
+        if storage_threshold:
+            console.print(f"    Threshold: {storage_threshold}MB")
+        if storage_mode:
+            console.print(f"    Mode: {storage_mode}")
 
 
 @app.command()
@@ -580,9 +662,27 @@ def manifest(
     # If a specific reference is provided, show its details
     if reference:
         try:
-            # Try to get manifest (works for both tags and digests)
-            manifest = adapter.get_manifest(config.registry_ref, reference)
-            remote = adapter.get_remote_state(config.registry_ref, reference)
+            # Resolve to digest for consistency
+            resolved_digest = adapter.resolve_tag_to_digest(config.registry_ref, reference)
+            manifest = adapter.get_manifest(config.registry_ref, resolved_digest)
+            
+            # Try index-based approach first
+            storage_info = {}
+            if config.storage.enabled:
+                try:
+                    from .storage_models import StorageType
+                    index = adapter.get_index(config.registry_ref, resolved_digest)
+                    # Build remote state from index
+                    from .ops import _index_to_remote_state
+                    remote = _index_to_remote_state(index, resolved_digest)
+                    # Store storage info for display
+                    for path, entry in index.files.items():
+                        storage_info[path] = "blob" if entry.storage == StorageType.BLOB else "oci"
+                except ValueError:
+                    # Fall back to legacy
+                    remote = adapter.get_remote_state(config.registry_ref, resolved_digest)
+            else:
+                remote = adapter.get_remote_state(config.registry_ref, resolved_digest)
         except Exception as e:
             console.print(f"[red]✗[/red] Failed to fetch manifest for '{reference}': {e}")
             raise typer.Exit(1)
@@ -615,17 +715,21 @@ def manifest(
         table.add_column("Path")
         table.add_column("Size", justify="right")
         table.add_column("Digest")
+        if storage_info:  # Add storage column if available
+            table.add_column("Storage")
         
         for path, file_info in sorted(remote.files.items()):
             file_digest = file_info.digest
             if not full and file_digest.startswith("sha256:"):
                 # Show sha256:7chars format
                 file_digest = "sha256:" + file_digest[7:14]
-            table.add_row(
-                path,
-                humanize_size(file_info.size),
-                file_digest
-            )
+            
+            # Build row data
+            row = [path, humanize_size(file_info.size), file_digest]
+            if storage_info:
+                row.append(storage_info.get(path, "unknown"))
+            
+            table.add_row(*row)
         
         console.print(table)
     else:

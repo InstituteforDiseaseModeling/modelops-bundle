@@ -13,8 +13,9 @@ from oras.provider import Registry
 from oras.container import Container
 
 from .context import ProjectContext
-from .constants import BUNDLE_VERSION
+from .constants import BUNDLE_VERSION, BUNDLE_INDEX_MEDIA_TYPE
 from .core import FileInfo, RemoteState
+from .storage_models import BundleIndex, BundleFileEntry, StorageType
 from .utils import get_iso_timestamp
 
 # OCI media types for manifest accept headers
@@ -346,4 +347,168 @@ class OrasAdapter:
         # The oras-py Registry client has a get_tags method
         tags = self.client.get_tags(registry_ref)
         return list(tags) if tags else []
+    
+    # ============= NEW INDEX-BASED METHODS =============
+    
+    def push_with_index_config(
+        self,
+        registry_ref: str,
+        tag: str,
+        oci_file_paths: List[Tuple[Path, str]],
+        index: BundleIndex,
+        manifest_annotations: Optional[Dict] = None,
+    ) -> str:
+        """
+        Push files with BundleIndex as manifest config.
+        
+        The index is the sole source of truth, but we also preserve paths in layer 
+        annotations for backward compatibility with get_remote_state.
+        
+        Args:
+            registry_ref: Registry reference (e.g., localhost:5000/myrepo)
+            tag: Tag to push to
+            oci_file_paths: List of (absolute_path, relative_path) tuples for OCI layers
+            index: BundleIndex to store as manifest config
+            manifest_annotations: Optional manifest annotations
+            
+        Returns:
+            Canonical digest of pushed manifest
+        """
+        target = self._build_target(registry_ref, tag)
+        
+        # Serialize index using deterministic JSON
+        index_json = index.to_json_deterministic(indent=2).encode("utf-8")
+        
+        # Write index to temporary file
+        with tempfile.NamedTemporaryFile(suffix=".json", mode="wb", delete=False) as tmp:
+            tmp.write(index_json)
+            tmp.flush()
+            tmp_path = tmp.name
+        
+        # Create path annotations for OCI files only (for backward compat)
+        anno_file_path = None
+        if oci_file_paths:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as anno_file:
+                annotations = {}
+                for abs_path, rel_path in oci_file_paths:
+                    # Map absolute path to annotation that preserves relative path in layer title
+                    annotations[str(abs_path)] = {
+                        "org.opencontainers.image.title": rel_path
+                    }
+                json.dump(annotations, anno_file)
+                anno_file.flush()
+                anno_file_path = anno_file.name
+        
+        try:
+            # Push with index as manifest config
+            files_to_push = [str(abs_path) for abs_path, _ in oci_file_paths]
+            
+            # Push to registry
+            push_args = {
+                "target": target,
+                "files": files_to_push,
+                "manifest_config": f"{tmp_path}:{BUNDLE_INDEX_MEDIA_TYPE}",
+                "manifest_annotations": manifest_annotations or {},
+            }
+            
+            # Add annotation file if we have OCI files (for backward compat)
+            if anno_file_path:
+                push_args["annotation_file"] = anno_file_path
+            
+            resp = self.client.push(**push_args)
+            
+            # Try to get digest from response headers
+            digest = resp.headers.get("Docker-Content-Digest") if resp else None
+            
+            if not digest:
+                # Fallback: resolve via HEAD request
+                digest = self.resolve_tag_to_digest(registry_ref, tag)
+            
+            return digest
+            
+        finally:
+            # Clean up temp files
+            Path(tmp_path).unlink(missing_ok=True)
+            if anno_file_path:
+                Path(anno_file_path).unlink(missing_ok=True)
+    
+    def get_index(self, registry_ref: str, digest: str) -> BundleIndex:
+        """
+        Get BundleIndex from manifest config (always by digest, never by tag).
+        
+        Args:
+            registry_ref: Registry reference
+            digest: Manifest digest (sha256:...)
+            
+        Returns:
+            BundleIndex from manifest config
+            
+        Raises:
+            ValueError: If artifact is missing required BundleIndex config
+        """
+        target = self._build_target(registry_ref, digest)
+        container = Container(target)
+        
+        # Get manifest
+        manifest = self.client.get_manifest(container)
+        
+        # Extract config descriptor
+        cfg = manifest.get("config") or {}
+        mt = cfg.get("mediaType")
+        dg = cfg.get("digest")
+        
+        # Validate it's a BundleIndex
+        if mt != BUNDLE_INDEX_MEDIA_TYPE:
+            raise ValueError(
+                f"Artifact missing required BundleIndex config "
+                f"(mediaType={BUNDLE_INDEX_MEDIA_TYPE}, got {mt})"
+            )
+        
+        if not dg:
+            raise ValueError("Manifest config missing digest")
+        
+        # Fetch config blob
+        raw = self.client.get_blob(container, dg).content
+        
+        # Parse as BundleIndex
+        return BundleIndex.model_validate_json(raw)
+    
+    def pull_selected(
+        self,
+        registry_ref: str,
+        digest: str,
+        entries: List[BundleFileEntry],
+        output_dir: Path,
+        blob_store=None,  # Optional[BlobStore]
+    ) -> None:
+        """
+        Pull selected files to output directory.
+        
+        Caller is responsible for digest verification.
+        
+        Args:
+            registry_ref: Registry reference
+            digest: Manifest digest to pull from
+            entries: List of BundleFileEntry to pull
+            output_dir: Output directory
+            blob_store: BlobStore instance (required if any BLOB entries)
+        """
+        target = self._build_target(registry_ref, digest)
+        container = Container(target)
+        
+        for entry in entries:
+            dst = output_dir / entry.path
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            
+            if entry.storage == StorageType.OCI:
+                # Download from registry
+                self.client.download_blob(container, entry.digest, str(dst))
+            else:
+                # Download from blob storage
+                if not entry.blobRef or not blob_store:
+                    raise ValueError(
+                        f"Blob store required for {entry.path} "
+                        f"(storage={entry.storage})"
+                    )
+                blob_store.get(entry.blobRef, dst)
 

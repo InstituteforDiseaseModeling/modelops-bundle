@@ -23,6 +23,14 @@ from modelops_bundle.context import ProjectContext
 from modelops_bundle.utils import compute_digest
 
 
+def setup_mock_adapter(adapter):
+    """Setup common mock methods for OrasAdapter mock."""
+    # Set defaults for new index-based methods
+    adapter.push_with_index_config.return_value = "sha256:newdigest"
+    adapter.get_index.side_effect = ValueError("No index - fall back to legacy")
+    return adapter
+
+
 @pytest.fixture
 def test_project(tmp_path):
     """Create a test project with tracked files."""
@@ -64,7 +72,7 @@ class TestPushRaceProtection:
         ctx, config, tracked = test_project
         
         with patch("modelops_bundle.ops.OrasAdapter") as MockAdapter:
-            adapter = MockAdapter.return_value
+            adapter = setup_mock_adapter(MockAdapter.return_value)
             
             # Initial tag state
             adapter.get_current_tag_digest.return_value = "sha256:initial"
@@ -103,6 +111,8 @@ class TestPushRaceProtection:
                 files={}
             )
             adapter.push_files.return_value = "sha256:newdigest"
+            adapter.push_with_index_config.return_value = "sha256:newdigest"
+            adapter.get_index.side_effect = ValueError("No index")
             
             # Create push plan
             plan = push_plan(config, tracked, ctx=ctx)
@@ -114,8 +124,8 @@ class TestPushRaceProtection:
             result = push_apply(config, plan, force=True, ctx=ctx)
             assert result == "sha256:newdigest"
             
-            # Verify push was called
-            adapter.push_files.assert_called_once()
+            # Verify push was called (either legacy or index-based)
+            assert adapter.push_files.called or adapter.push_with_index_config.called
     
     def test_push_wrapper_respects_force_parameter(self, test_project):
         """Test that the push() wrapper properly passes force parameter."""
@@ -156,19 +166,20 @@ class TestPushRaceProtection:
         ctx, config, tracked = test_project
         
         with patch("modelops_bundle.ops.OrasAdapter") as MockAdapter:
-            adapter = MockAdapter.return_value
+            adapter = setup_mock_adapter(MockAdapter.return_value)
             
             # New tag doesn't exist
             adapter.get_current_tag_digest.return_value = None
             adapter.get_remote_state.side_effect = Exception("Tag not found")
             adapter.push_files.return_value = "sha256:newdigest"
+            adapter.push_with_index_config.return_value = "sha256:newdigest"
             
             # Should work without force
             result = push(config, tracked, tag="v1.0.0", ctx=ctx, force=False)
             assert result == "sha256:newdigest"
             
-            # Verify push was called
-            adapter.push_files.assert_called_once()
+            # Verify push was called (either legacy or index-based)
+            assert adapter.push_files.called or adapter.push_with_index_config.called
 
 
 class TestConcurrentPushScenarios:
@@ -179,7 +190,7 @@ class TestConcurrentPushScenarios:
         ctx, config, tracked = test_project
         
         with patch("modelops_bundle.ops.OrasAdapter") as MockAdapter:
-            adapter = MockAdapter.return_value
+            adapter = setup_mock_adapter(MockAdapter.return_value)
             
             # User A creates plan
             adapter.get_current_tag_digest.return_value = "sha256:base"
@@ -205,7 +216,7 @@ class TestConcurrentPushScenarios:
         ctx, config, tracked = test_project
         
         with patch("modelops_bundle.ops.OrasAdapter") as MockAdapter:
-            adapter = MockAdapter.return_value
+            adapter = setup_mock_adapter(MockAdapter.return_value)
             
             # First push scenario
             adapter.get_current_tag_digest.return_value = "sha256:v1"
@@ -214,6 +225,7 @@ class TestConcurrentPushScenarios:
                 files={}
             )
             adapter.push_files.return_value = "sha256:pushed_1"
+            adapter.push_with_index_config.return_value = "sha256:pushed_1"
             
             # First push should work
             plan1 = push_plan(config, tracked, ctx=ctx)
@@ -245,7 +257,7 @@ class TestConcurrentPushScenarios:
         ctx, config, tracked = test_project
         
         with patch("modelops_bundle.ops.OrasAdapter") as MockAdapter:
-            adapter = MockAdapter.return_value
+            adapter = setup_mock_adapter(MockAdapter.return_value)
             
             # Tag initially points to v2
             adapter.get_current_tag_digest.return_value = "sha256:v2"

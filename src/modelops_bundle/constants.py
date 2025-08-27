@@ -12,5 +12,9 @@ STATE_FILE = "state.json"
 DEFAULT_TAG = "latest"
 DEFAULT_ARTIFACT_TYPE = "application/vnd.modelops.bundle.v1"
 
+# Media types for BundleIndex
+BUNDLE_INDEX_MEDIA_TYPE = "application/vnd.modelops.bundle.index.v1+json"
+BUNDLE_MANIFEST_KIND = "application/vnd.modelops.bundle.v1"
+
 # Version
 BUNDLE_VERSION = "0.1.0"

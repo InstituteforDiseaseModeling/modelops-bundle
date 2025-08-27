@@ -37,6 +37,9 @@ class BaseMockAdapter:
         if hasattr(self, 'remote') and self.remote:
             return self.remote.manifest_digest
         return f"sha256:{'0' * 64}"  # Fake digest
+    def get_index(self, ref, digest):
+        # Mock: no index available, fall back to legacy
+        raise ValueError("No BundleIndex found - fall back to legacy")
 
 
 REGISTRY_AVAILABLE = os.environ.get("REGISTRY_URL", "localhost:5555")

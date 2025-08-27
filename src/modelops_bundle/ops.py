@@ -1,7 +1,8 @@
 """Core operations for modelops-bundle."""
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 import json
 import time
 import yaml
@@ -10,6 +11,7 @@ from .context import ProjectContext
 
 from .core import (
     BundleConfig,
+    FileInfo,
     PullPreview,
     PullResult,
     PushPlan,
@@ -18,7 +20,93 @@ from .core import (
     TrackedFiles,
 )
 from .oras import OrasAdapter
+from .storage import make_blob_store
+from .storage_models import BundleIndex, BundleFileEntry, StorageType
+from .utils import compute_digest, get_iso_timestamp
 from .working_state import TrackedWorkingState
+
+
+# ============= Internal Storage Planning =============
+
+@dataclass
+class StoragePushPlan:
+    """Internal storage plan for push operations (not exposed in API)."""
+    tag: str
+    oci_files: List[FileInfo]      # Files to store as OCI layers
+    blob_files: List[FileInfo]     # Files to store in blob storage
+    all_files: List[FileInfo]      # All files (for index)
+    previous_index: Optional[BundleIndex] = None  # For blob ref reuse
+
+
+def _build_storage_plan(plan: PushPlan, config: BundleConfig) -> StoragePushPlan:
+    """Build internal storage plan from push plan."""
+    policy = config.storage
+    oci_files = []
+    blob_files = []
+    
+    for file_info in plan.manifest_files:
+        file_path = Path(file_info.path)
+        storage_type = policy.classify(file_path, file_info.size)
+        
+        if storage_type == StorageType.OCI:
+            oci_files.append(file_info)
+        else:
+            blob_files.append(file_info)
+    
+    return StoragePushPlan(
+        tag=plan.tag,
+        oci_files=oci_files,
+        blob_files=blob_files,
+        all_files=plan.manifest_files,
+        previous_index=None  # TODO: fetch previous index if exists
+    )
+
+
+def _build_index(
+    storage_plan: StoragePushPlan,
+    blob_refs: Dict[str, 'BlobReference'],
+    ctx: ProjectContext
+) -> BundleIndex:
+    """Build BundleIndex from storage plan and uploaded blob references."""
+    from .constants import BUNDLE_VERSION
+    
+    files = {}
+    for file_info in storage_plan.all_files:
+        # Determine storage type
+        is_blob = any(f.path == file_info.path for f in storage_plan.blob_files)
+        
+        entry = BundleFileEntry(
+            path=file_info.path,
+            digest=file_info.digest,
+            size=file_info.size,
+            storage=StorageType.BLOB if is_blob else StorageType.OCI,
+            blobRef=blob_refs.get(file_info.path) if is_blob else None
+        )
+        files[file_info.path] = entry
+    
+    return BundleIndex(
+        version="1.0",
+        created=get_iso_timestamp(),
+        tool={"name": "modelops-bundle", "version": BUNDLE_VERSION},
+        files=files,
+        metadata={}
+    )
+
+
+def _index_to_remote_state(index: BundleIndex, manifest_digest: str) -> RemoteState:
+    """Convert BundleIndex to RemoteState for diffing."""
+    files = {}
+    for path, entry in index.files.items():
+        files[path] = FileInfo(
+            path=path,
+            digest=entry.digest,
+            size=entry.size
+        )
+    
+    return RemoteState(
+        manifest_digest=manifest_digest,
+        files=files
+    )
 
 
 # ============= File I/O =============
@@ -216,8 +304,18 @@ def pull_preview(
     ref = reference or config.default_tag
     resolved_digest = adapter.resolve_tag_to_digest(config.registry_ref, ref)
     
-    # Get remote state using resolved digest
-    remote = adapter.get_remote_state(config.registry_ref, resolved_digest)
+    # Get remote state
+    if config.storage.enabled:
+        # New index-based approach
+        try:
+            index = adapter.get_index(config.registry_ref, resolved_digest)
+            remote = _index_to_remote_state(index, resolved_digest)
+        except ValueError:
+            # Fall back to legacy if index not found
+            remote = adapter.get_remote_state(config.registry_ref, resolved_digest)
+    else:
+        # Legacy approach
+        remote = adapter.get_remote_state(config.registry_ref, resolved_digest)
     
     # Create working state with deletion tracking
     working_state = TrackedWorkingState.from_tracked(tracked, ctx)
@@ -258,14 +356,58 @@ def pull_apply(
     
     adapter = OrasAdapter()
     
-    # Execute pull using DIGEST from preview, not tag!
-    # This ensures we pull exactly what was previewed
-    adapter.pull_files(
-        registry_ref=config.registry_ref,
-        reference=preview.resolved_digest,  # USE DIGEST!
-        output_dir=ctx.root,
-        ctx=ctx
-    )
+    # Check if we should use index-based pull
+    if config.storage.enabled:
+        try:
+            # Get index by digest
+            index = adapter.get_index(config.registry_ref, preview.resolved_digest)
+            
+            # Initialize blob store if needed
+            blob_store = make_blob_store(config.storage)
+            
+            # Map preview files to index entries
+            entries_to_pull = []
+            for file_info in preview.will_update_or_add:
+                if file_info.path in index.files:
+                    entries_to_pull.append(index.files[file_info.path])
+            
+            # Pull selected files
+            if entries_to_pull:
+                adapter.pull_selected(
+                    registry_ref=config.registry_ref,
+                    digest=preview.resolved_digest,
+                    entries=entries_to_pull,
+                    output_dir=ctx.root,
+                    blob_store=blob_store
+                )
+                
+                # Verify digests after download
+                for entry in entries_to_pull:
+                    file_path = ctx.root / entry.path
+                    if file_path.exists():
+                        actual = compute_digest(file_path)
+                        if actual != entry.digest:
+                            file_path.unlink()  # Delete corrupted file
+                            raise ValueError(
+                                f"Digest mismatch for {entry.path}: "
+                                f"expected {entry.digest}, got {actual}"
+                            )
+        except ValueError:
+            # Fall back to legacy pull if no index
+            adapter.pull_files(
+                registry_ref=config.registry_ref,
+                reference=preview.resolved_digest,
+                output_dir=ctx.root,
+                ctx=ctx
+            )
+    else:
+        # Legacy pull
+        adapter.pull_files(
+            registry_ref=config.registry_ref,
+            reference=preview.resolved_digest,
+            output_dir=ctx.root,
+            ctx=ctx
+        )
     
     # Delete local files if requested
     deleted_count = 0
@@ -374,7 +516,11 @@ def push_apply(
             logger = logging.getLogger(__name__)
             logger.warning(f"Tag '{plan.tag}' has moved but proceeding with --force")
     
-    # Execute push
+    # Check if storage is enabled - if so, use new index-based approach
+    if config.storage.enabled:
+        return _push_apply_with_index(config, plan, ctx)
+    
+    # Legacy push (will be removed)
     manifest_digest = adapter.push_files(
         registry_ref=config.registry_ref,
         files=plan.manifest_files,
@@ -388,6 +534,62 @@ def push_apply(
         TrackedFiles(files={f.path for f in plan.manifest_files}), ctx
     ).snapshot
     state.update_after_push(manifest_digest, tracked_snapshot)
+    save_state(state, ctx)
+    
+    return manifest_digest
+
+
+def _push_apply_with_index(
+    config: BundleConfig,
+    plan: PushPlan,
+    ctx: ProjectContext
+) -> str:
+    """Execute push with BundleIndex and external storage support."""
+    adapter = OrasAdapter()
+    
+    # Build internal storage plan
+    storage_plan = _build_storage_plan(plan, config)
+    
+    # Initialize blob store if needed
+    blob_store = make_blob_store(config.storage)
+    blob_refs = {}
+    
+    # Upload blob files if any
+    if storage_plan.blob_files and blob_store:
+        for file_info in storage_plan.blob_files:
+            file_path = ctx.root / file_info.path
+            blob_ref = blob_store.put(file_info.digest, file_path)
+            blob_refs[file_info.path] = blob_ref
+    
+    # Build index with ALL files
+    index = _build_index(storage_plan, blob_refs, ctx)
+    
+    # Prepare OCI file paths (relative paths for the index entries)
+    oci_file_paths = [(ctx.root / f.path, f.path) for f in storage_plan.oci_files]
+    
+    # Push with index as config
+    manifest_digest = adapter.push_with_index_config(
+        registry_ref=config.registry_ref,
+        tag=plan.tag,
+        oci_file_paths=oci_file_paths,
+        index=index,
+        manifest_annotations=None
+    )
+    
+    # Update sync state with ALL files from index
+    state = load_state(ctx)
+    
+    # Create tracked snapshot from ALL files in index
+    all_files_snapshot = {
+        path: entry.digest 
+        for path, entry in index.files.items()
+    }
+    
+    # Update state with the complete file list
+    state.last_push_digest = manifest_digest
+    state.last_synced_files = all_files_snapshot
+    state.timestamp = time.time()
+    
     save_state(state, ctx)
     
     return manifest_digest

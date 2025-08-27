@@ -196,6 +196,7 @@ class TestPullTagRaces:
             MockAdapter.return_value = mock_adapter
             mock_adapter.resolve_tag_to_digest.return_value = digest_v1
             mock_adapter.get_remote_state.return_value = adapter.get_remote_state(registry_ref, digest_v1)
+            mock_adapter.get_index.side_effect = ValueError("No index - fall back to legacy")
             
             preview = pull_preview(config, tracked, "latest", False, ctx=ctx)
             
@@ -208,6 +209,7 @@ class TestPullTagRaces:
             mock_adapter2 = Mock()
             MockAdapter2.return_value = mock_adapter2
             mock_adapter2.pull_files.return_value = []  # Mock successful pull
+            mock_adapter2.get_index.side_effect = ValueError("No index - fall back to legacy")
             
             result = pull_apply(config, tracked, preview, ctx=ctx)
             

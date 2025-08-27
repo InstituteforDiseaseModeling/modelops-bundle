@@ -68,9 +68,11 @@ class TestPushToNewTag:
             # Mock: New tag doesn't exist in registry
             adapter.get_remote_state.side_effect = Exception("Tag not found")
             adapter.get_current_tag_digest.return_value = None  # Tag doesn't exist
+            adapter.get_index.side_effect = ValueError("No index - fall back to legacy")
             
             # Mock: Push succeeds
             adapter.push_files.return_value = "sha256:newdigest"
+            adapter.push_with_index_config.return_value = "sha256:newdigest"
             
             # Mock load functions
             with patch("modelops_bundle.ops.load_config", return_value=mock_config), \
@@ -81,17 +83,25 @@ class TestPushToNewTag:
                 # Execute push to new tag
                 digest = push(mock_config, mock_tracked, tag="v1.0", ctx=mock_context)
                 
-                # Verify push was called with ALL files
-                adapter.push_files.assert_called_once()
-                call_args = adapter.push_files.call_args
+                # Verify push was called (either legacy or index-based)
+                assert adapter.push_files.called or adapter.push_with_index_config.called
                 
-                # Check that all tracked files were included
-                # push_files is called with keyword arguments
-                pushed_files = call_args.kwargs.get('files')
-                assert pushed_files is not None
-                assert len(pushed_files) == 2
-                assert any(f.path == "file1.txt" for f in pushed_files)
-                assert any(f.path == "file2.txt" for f in pushed_files)
+                # For index-based push, check the index was built with all files
+                if adapter.push_with_index_config.called:
+                    call_args = adapter.push_with_index_config.call_args
+                    index = call_args.kwargs.get('index')
+                    assert index is not None
+                    assert len(index.files) == 2
+                    assert "file1.txt" in index.files
+                    assert "file2.txt" in index.files
+                else:
+                    # Legacy push_files check
+                    call_args = adapter.push_files.call_args
+                    pushed_files = call_args.kwargs.get('files')
+                    assert pushed_files is not None
+                    assert len(pushed_files) == 2
+                    assert any(f.path == "file1.txt" for f in pushed_files)
+                    assert any(f.path == "file2.txt" for f in pushed_files)
     
     def test_push_to_existing_tag_with_no_changes(self, mock_context, mock_config, mock_tracked):
         """Test that pushing to existing tag with no changes is optimized."""
