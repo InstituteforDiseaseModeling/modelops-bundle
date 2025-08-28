@@ -25,7 +25,7 @@ from .ops import (
 from .oras import OrasAdapter
 from .working_state import TrackedWorkingState
 from .core import RemoteStatus, RemoteState
-from .errors import MissingIndexError, NetworkError, AuthError, NotFoundError, UnsupportedArtifactError
+from .errors import MissingIndexError, NetworkError, AuthError, NotFoundError, UnsupportedArtifactError, TagMovedError
 
 
 app = typer.Typer(help="ModelOps-Bundle - OCI artifact-based model bundle synchronization")
@@ -106,6 +106,8 @@ def require_remote(
     
     # Add helpful hints based on status
     if status == RemoteStatus.EMPTY:
+        console.print()
+        console.print(f"[dim]Hint: Did you mistype the registry name or tag?")
         console.print()
         console.print("To push initial content, run:")
         console.print(f"  [cyan]uv run modelops-bundle push[/cyan]")
@@ -640,13 +642,10 @@ def push(
         manifest_digest = ops_push(config, tracked, tag=tag, ctx=ctx, force=force)
         console.print(f"[green]✓[/green] Pushed successfully")
         console.print(f"[dim]Digest: {manifest_digest[:16]}...[/dim]")
-    except RuntimeError as e:
+    except TagMovedError as e:
         # Specific handling for tag race errors
-        if "Tag" in str(e) and "has moved" in str(e):
-            console.print(f"[red]✗[/red] {e}")
-            console.print("[yellow]Hint: Use --force to override if you're sure you want to push[/yellow]")
-        else:
-            console.print(f"[red]✗[/red] Push failed: {e}")
+        console.print(f"[red]✗[/red] {e}")
+        console.print("[yellow]Hint: Use --force to override if you're sure you want to push[/yellow]")
         raise typer.Exit(1)
     except Exception as e:
         console.print(f"[red]✗[/red] Push failed: {e}")
@@ -906,8 +905,9 @@ def manifest(
                     remote, _ = get_remote_state_with_status(adapter, config.registry_ref, tag)
                     if not remote:
                         continue
-                    manifest = adapter.get_manifest(config.registry_ref, tag)
+                    # Use resolved digest to avoid race condition
                     digest = remote.manifest_digest
+                    manifest = adapter.get_manifest(config.registry_ref, digest)
                     
                     # Extract creation date from annotations
                     created = None

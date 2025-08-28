@@ -58,12 +58,12 @@ def humanize_date(iso_string: str) -> str:
         "2024-01-15T10:30:45Z" -> "2 hours ago"
         "2024-01-10T10:30:45Z" -> "5 days ago"
     """
-    from datetime import datetime
+    from datetime import datetime, timezone
     
     try:
-        # Parse ISO timestamp
-        dt = datetime.fromisoformat(iso_string.rstrip('Z'))
-        now = datetime.utcnow()
+        # Parse ISO timestamp as UTC (properly handling timezone)
+        dt = datetime.fromisoformat(iso_string.rstrip('Z')).replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
         delta = now - dt
         
         # Convert to human-readable format

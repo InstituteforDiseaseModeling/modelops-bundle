@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 import json
+import os
+import tempfile
 import time
 import yaml
 
@@ -24,6 +26,46 @@ from .storage import make_blob_store
 from .storage_models import BundleIndex, BundleFileEntry, StorageType
 from .utils import compute_digest, get_iso_timestamp
 from .working_state import TrackedWorkingState
+
+
+# ============= Atomic Write Helpers =============
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Atomically write text to file with crash safety.
+    
+    Args:
+        path: Target file path
+        text: Text content to write
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Create temp file in same directory
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        delete=False,
+        dir=path.parent,
+        prefix=f".{path.name}.tmp-",
+        suffix=""
+    ) as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+        tmp = Path(f.name)
+    
+    try:
+        # Atomic rename
+        os.replace(tmp, path)
+        
+        # Fsync directory to ensure rename is durable
+        dirfd = os.open(str(path.parent), os.O_DIRECTORY)
+        try:
+            os.fsync(dirfd)
+        finally:
+            os.close(dirfd)
+    except:
+        # Clean up temp file on any error
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 # ============= Internal Storage Planning =============
@@ -135,13 +177,13 @@ def load_config(ctx: Optional[ProjectContext] = None) -> BundleConfig:
 
 
 def save_config(config: BundleConfig, ctx: Optional[ProjectContext] = None) -> None:
-    """Save bundle configuration."""
+    """Save bundle configuration atomically."""
     if ctx is None:
         ctx = ProjectContext.init()
     
-    ctx.config_path.parent.mkdir(parents=True, exist_ok=True)
-    with ctx.config_path.open("w") as f:
-        yaml.safe_dump(config.model_dump(), f, default_flow_style=False)
+    # Use atomic write for crash safety
+    config_text = yaml.safe_dump(config.model_dump(), default_flow_style=False)
+    _atomic_write_text(ctx.config_path, config_text)
 
 
 def load_tracked(ctx: Optional[ProjectContext] = None) -> TrackedFiles:
@@ -158,14 +200,13 @@ def load_tracked(ctx: Optional[ProjectContext] = None) -> TrackedFiles:
 
 
 def save_tracked(tracked: TrackedFiles, ctx: Optional[ProjectContext] = None) -> None:
-    """Save tracked files list."""
+    """Save tracked files list atomically."""
     if ctx is None:
         ctx = ProjectContext()
     
-    ctx.tracked_path.parent.mkdir(parents=True, exist_ok=True)
-    with ctx.tracked_path.open("w") as f:
-        for file in sorted(tracked.files):
-            f.write(f"{file}\n")
+    # Use atomic write for crash safety
+    tracked_text = "".join(f"{file}\n" for file in sorted(tracked.files))
+    _atomic_write_text(ctx.tracked_path, tracked_text)
 
 
 def load_state(ctx: Optional[ProjectContext] = None) -> SyncState:
@@ -182,13 +223,13 @@ def load_state(ctx: Optional[ProjectContext] = None) -> SyncState:
 
 
 def save_state(state: SyncState, ctx: Optional[ProjectContext] = None) -> None:
-    """Save sync state."""
+    """Save sync state atomically."""
     if ctx is None:
         ctx = ProjectContext()
     
-    ctx.state_path.parent.mkdir(parents=True, exist_ok=True)
-    with ctx.state_path.open("w") as f:
-        json.dump(state.model_dump(), f, indent=2)
+    # Use atomic write for crash safety
+    state_text = json.dumps(state.model_dump(), indent=2)
+    _atomic_write_text(ctx.state_path, state_text)
 
 
 # ============= Push Operation =============

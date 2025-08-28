@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Tuple
 import hashlib
 import json
 import logging
+import os
 import tempfile
 import time
 import warnings
@@ -35,11 +36,105 @@ OCI_ACCEPT = ",".join([
 ])
 
 
+def _safe_target(root: Path, rel_path: str) -> Path:
+    """Validate path is safe and within project root.
+    
+    Args:
+        root: Project root directory
+        rel_path: Relative path from bundle
+        
+    Returns:
+        Safe resolved path
+        
+    Raises:
+        ValueError: If path is unsafe or escapes root
+    """
+    # Check for empty path
+    if not rel_path or not rel_path.strip():
+        raise ValueError(f"Unsafe path in bundle: empty path")
+    
+    # Forbid absolute or parent traversal
+    # Check both forward and backslash for cross-platform safety
+    if (rel_path.startswith(("/", "\\")) or 
+        ".." in Path(rel_path).parts or
+        ".." in rel_path.split("\\") or  # Windows-style traversal
+        ".." in rel_path.split("/")):    # Unix-style traversal
+        raise ValueError(f"Unsafe path in bundle: {rel_path}")
+    
+    # Resolve and verify it stays within root
+    target = (root / rel_path).resolve()
+    root_resolved = root.resolve()
+    
+    # Check that resolved path is under root
+    try:
+        target.relative_to(root_resolved)
+    except ValueError:
+        raise ValueError(f"Path escapes project root: {rel_path}")
+    
+    return target
+
+
+def _atomic_download(write_fn, final_path: Path):
+    """Atomically download file with crash safety.
+    
+    Args:
+        write_fn: Function that takes a file path (not file object)
+        final_path: Final destination path
+        
+    Raises:
+        Exception: If download fails
+    """
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Create temp file in same directory for atomic rename
+    fd, tmppath = tempfile.mkstemp(
+        prefix=f".{final_path.name}.partial-",
+        dir=final_path.parent
+    )
+    
+    try:
+        # Close the fd - we'll let write_fn handle the file
+        os.close(fd)
+        
+        # Call write function with the temp file path
+        write_fn(tmppath)
+        
+        # Ensure data is synced
+        with open(tmppath, 'rb') as f:
+            os.fsync(f.fileno())
+        
+        # Atomic rename
+        os.replace(tmppath, final_path)
+        
+        # Fsync directory to ensure rename is durable
+        dirfd = os.open(str(final_path.parent), os.O_DIRECTORY)
+        try:
+            os.fsync(dirfd)
+        finally:
+            os.close(dirfd)
+            
+    except Exception:
+        # Clean up temp file on error
+        try:
+            os.unlink(tmppath)
+        except OSError:
+            pass
+        raise
+
+
 class OrasAdapter:
     """Adapter for ORAS operations using real oras-py."""
     
-    def __init__(self, insecure: bool = True):
-        """Initialize ORAS Registry client."""
+    def __init__(self, insecure: Optional[bool] = None):
+        """Initialize ORAS Registry client.
+        
+        Args:
+            insecure: Whether to skip TLS verification. If None, reads from
+                     MODELOPS_BUNDLE_INSECURE env var (default: True)
+        """
+        if insecure is None:
+            # Check environment variable, default to True for backward compatibility
+            insecure = os.environ.get("MODELOPS_BUNDLE_INSECURE", "1") != "0"
         self.client = Registry(insecure=insecure)
     
     def _build_target(self, registry_ref: str, reference: str) -> str:
@@ -405,6 +500,9 @@ class OrasAdapter:
         """
         Pull selected files to output directory with digest verification.
         
+        Uses atomic downloads and path safety checks to ensure reliability
+        and security.
+        
         Args:
             registry_ref: Registry reference
             digest: Manifest digest to pull from
@@ -414,6 +512,7 @@ class OrasAdapter:
             
         Raises:
             DigestMismatchError: If any file fails digest verification
+            ValueError: If path is unsafe
         """
         from .errors import BlobProviderMissingError
         
@@ -421,22 +520,31 @@ class OrasAdapter:
         container = Container(target)
         
         for entry in entries:
-            dst = output_dir / entry.path
-            dst.parent.mkdir(parents=True, exist_ok=True)
+            # Validate path safety before any filesystem operations
+            dst = _safe_target(output_dir, entry.path)
             
-            # Download based on storage type
+            # Define download functions for atomic operation
             if entry.storage == StorageType.OCI:
-                # Download from registry
-                self.client.download_blob(container, entry.digest, str(dst))
+                # OCI download function
+                def download_oci(tmppath):
+                    # download_blob expects a file path string
+                    self.client.download_blob(container, entry.digest, tmppath)
+                
+                _atomic_download(download_oci, dst)
             else:
-                # Download from blob storage
+                # Blob storage download function
                 if not entry.blobRef or not blob_store:
                     raise BlobProviderMissingError()
-                blob_store.get(entry.blobRef, dst)
+                
+                def download_blob(tmppath):
+                    # blob_store.get expects a Path
+                    blob_store.get(entry.blobRef, Path(tmppath))
+                
+                _atomic_download(download_blob, dst)
             
-            # Always verify digest
+            # Verify digest AFTER atomic replace (on the file user now sees)
             actual_digest = compute_digest(dst)
             if actual_digest != entry.digest:
-                dst.unlink()  # Remove corrupted file
+                dst.unlink(missing_ok=True)  # Remove corrupted file
                 raise DigestMismatchError(entry.path, entry.digest, actual_digest)
 
