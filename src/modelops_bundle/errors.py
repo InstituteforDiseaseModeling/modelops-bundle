@@ -34,7 +34,8 @@ class NotFoundError(RegistryError):
 class TagMovedError(RegistryError):
     """Tag moved during operation (race condition)."""
     
-    def __init__(self, tag: str, expected: str, actual: str):
+    def __init__(self, registry_ref: str, tag: str, expected: str, actual: str):
+        self.registry_ref = registry_ref
         self.tag = tag
         self.expected = expected
         self.actual = actual
@@ -42,7 +43,7 @@ class TagMovedError(RegistryError):
         super().__init__(
             f"Tag '{tag}' moved during operation. "
             f"Expected: {expected[:12]}..., Got: {actual_display} "
-            f"Your content is accessible at: {expected}"
+            f"Your content is accessible at: {registry_ref}@{expected}"
         )
 
 

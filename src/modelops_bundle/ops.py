@@ -540,6 +540,7 @@ def push_apply(
         if current_digest != plan.tag_base_digest:
             if not force:
                 raise TagMovedError(
+                    config.registry_ref,
                     plan.tag,
                     plan.tag_base_digest,
                     current_digest or "unknown"
@@ -562,7 +563,7 @@ def push_apply(
     if not force:
         final_digest = adapter.get_current_tag_digest(config.registry_ref, plan.tag)
         if final_digest and final_digest != manifest_digest:
-            raise TagMovedError(plan.tag, manifest_digest, final_digest)
+            raise TagMovedError(config.registry_ref, plan.tag, manifest_digest, final_digest)
     
     # Update sync state
     state = load_state(ctx)

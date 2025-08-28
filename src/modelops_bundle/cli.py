@@ -765,8 +765,11 @@ def pull(
     if overwrite and preview.has_destructive_changes():
         console.print("\n[red]Warning: Overwriting local changes![/red]")
     
-    # Execute pull (mirror operation)
-    console.print("\n[bold]Pulling files (full mirror)...[/bold]")
+    # Execute pull
+    if overwrite:
+        console.print("\n[bold]Pulling files (full mirror, will delete local-only files)...[/bold]")
+    else:
+        console.print("\n[bold]Pulling changes...[/bold]")
     try:
         result = ops_pull(config, tracked, tag=tag, overwrite=overwrite, ctx=ctx)
         console.print(f"[green]✓[/green] {result.summary()}")

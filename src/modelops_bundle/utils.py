@@ -61,8 +61,17 @@ def humanize_date(iso_string: str) -> str:
     from datetime import datetime, timezone
     
     try:
-        # Parse ISO timestamp as UTC (properly handling timezone)
-        dt = datetime.fromisoformat(iso_string.rstrip('Z')).replace(tzinfo=timezone.utc)
+        # Parse ISO timestamp preserving its timezone
+        if iso_string.endswith('Z'):
+            # Z means UTC
+            dt = datetime.fromisoformat(iso_string[:-1]).replace(tzinfo=timezone.utc)
+        else:
+            # Has explicit timezone offset or is naive
+            dt = datetime.fromisoformat(iso_string)
+            # If naive (no timezone), assume UTC for consistency
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        
         now = datetime.now(timezone.utc)
         delta = now - dt
         

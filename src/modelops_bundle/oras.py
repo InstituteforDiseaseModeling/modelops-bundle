@@ -99,8 +99,8 @@ def _atomic_download(write_fn, final_path: Path):
         # Call write function with the temp file path
         write_fn(tmppath)
         
-        # Ensure data is synced
-        with open(tmppath, 'rb') as f:
+        # Ensure data is synced - must open with write permission for fsync to work
+        with open(tmppath, 'r+b') as f:
             os.fsync(f.fileno())
         
         # Atomic rename
