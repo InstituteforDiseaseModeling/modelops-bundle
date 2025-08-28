@@ -23,8 +23,11 @@ from modelops_bundle.ops import (
     load_state,
     load_tracked,
 )
-from modelops_bundle.utils import compute_digest
+from modelops_bundle.utils import compute_digest, get_iso_timestamp
 from modelops_bundle.working_state import TrackedWorkingState
+from modelops_bundle.storage_models import BundleIndex, BundleFileEntry, StorageType
+from modelops_bundle.constants import BUNDLE_VERSION
+from modelops_bundle.errors import MissingIndexError
 
 from tests.test_registry_utils import skip_if_no_registry
 
@@ -40,8 +43,36 @@ class BaseMockAdapter:
             return self.remote.manifest_digest
         return f"sha256:{'0' * 64}"  # Fake digest
     def get_index(self, ref, digest):
-        # Mock: no index available, fall back to legacy
-        raise ValueError("No BundleIndex found - fall back to legacy")
+        # Create a mock BundleIndex from remote state
+        if not self.remote:
+            raise MissingIndexError(f"{ref}@{digest[:12]}...")
+        
+        index = BundleIndex(
+            version=BUNDLE_VERSION,
+            created=get_iso_timestamp(),
+            files={}
+        )
+        
+        # Convert RemoteState files to BundleIndex entries
+        for path, file_info in self.remote.files.items():
+            index.files[path] = BundleFileEntry(
+                path=path,
+                digest=file_info.digest,
+                size=file_info.size,
+                storage=StorageType.OCI,
+                blobRef=None
+            )
+        
+        return index
+    
+    def pull_selected(self, registry_ref, digest, entries, output_dir, blob_store=None):
+        """Mock implementation of pull_selected."""
+        # Write files based on the entries
+        for entry in entries:
+            file_path = output_dir / entry.path
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            # Write mock content
+            file_path.write_text("pulled content")
 
 
 # Skip if no registry available
@@ -418,11 +449,14 @@ class TestPullSafetyGuards:
                 super().__init__(remote)
             def get_remote_state(self, ref, tag):
                 return remote
-            def pull_files(self, registry_ref=None, reference=None, output_dir=None, ctx=None, **kwargs):
+            def pull_selected(self, registry_ref, digest, entries, output_dir, blob_store=None):
                 pull_called.append(True)
-                # Simulate pulling remote files
-                (output_dir / "modified.txt").write_text("original content")
-                (output_dir / "conflict.txt").write_text("remote version")
+                # Simulate pulling remote files based on entries
+                for entry in entries:
+                    if entry.path == "modified.txt":
+                        (output_dir / "modified.txt").write_text("original content")
+                    elif entry.path == "conflict.txt":
+                        (output_dir / "conflict.txt").write_text("remote version")
         
         import modelops_bundle.ops
         original_adapter = modelops_bundle.ops.OrasAdapter

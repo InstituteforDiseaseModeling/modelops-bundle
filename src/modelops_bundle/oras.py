@@ -15,8 +15,16 @@ from oras.container import Container
 from .context import ProjectContext
 from .constants import BUNDLE_VERSION, BUNDLE_INDEX_MEDIA_TYPE
 from .core import FileInfo, RemoteState
+from .errors import (
+    AuthError,
+    DigestMismatchError,
+    MissingIndexError,
+    NetworkError,
+    NotFoundError,
+    UnsupportedArtifactError,
+)
 from .storage_models import BundleIndex, BundleFileEntry, StorageType
-from .utils import get_iso_timestamp
+from .utils import get_iso_timestamp, compute_digest
 
 # OCI media types for manifest accept headers
 OCI_ACCEPT = ",".join([
@@ -125,12 +133,17 @@ class OrasAdapter:
                 )
                 
                 # Check response status
-                if resp.status_code == 404 and attempt < retries - 1:
-                    # Registry might have eventual consistency delay after push
-                    time.sleep(0.2 * (attempt + 1))  # 200ms, 400ms backoff
-                    continue
-                    
-                if resp.status_code != 200:
+                if resp.status_code == 404:
+                    if attempt < retries - 1:
+                        # Registry might have eventual consistency delay after push
+                        time.sleep(0.2 * (attempt + 1))  # 200ms, 400ms backoff
+                        continue
+                    raise NotFoundError(f"Manifest not found: {target}")
+                elif resp.status_code in (401, 403):
+                    raise AuthError(f"Authentication failed for {target}")
+                elif resp.status_code != 200:
+                    if resp.status_code >= 500:
+                        raise NetworkError(f"Registry error {resp.status_code}: {target}")
                     resp.raise_for_status()
                 
                 raw = resp.content or b""
@@ -139,10 +152,7 @@ class OrasAdapter:
                 # Check if this is an index/manifest list
                 media_type = manifest.get("mediaType", "")
                 if "index" in media_type or "list" in media_type or manifest.get("manifests"):
-                    raise ValueError(
-                        f"Reference {target} points to a manifest index/list, not a single artifact. "
-                        "Multi-platform images are not yet supported."
-                    )
+                    raise UnsupportedArtifactError(target, media_type or "manifest index/list")
                 
                 digest = resp.headers.get("Docker-Content-Digest")
                 if not digest:
@@ -157,11 +167,17 @@ class OrasAdapter:
                 
                 return manifest, digest, raw
                 
-            except Exception as e:
+            except (NotFoundError, NetworkError) as e:
                 last_error = e
-                if attempt < retries - 1 and "404" in str(e):
+                if attempt < retries - 1:
                     time.sleep(0.2 * (attempt + 1))
                     continue
+                raise
+            except Exception as e:
+                # Map connection errors
+                import requests
+                if isinstance(e, requests.exceptions.ConnectionError):
+                    raise NetworkError(f"Cannot connect to registry: {e}")
                 raise
         
         # Should not reach here, but be defensive
@@ -169,117 +185,24 @@ class OrasAdapter:
             raise last_error
         raise RuntimeError(f"Failed to fetch manifest after {retries} attempts")
     
-    def _create_path_annotations(self, files: List[FileInfo]) -> dict:
+    def _create_path_annotations(self, abs_paths: List[str], rel_paths: List[str]) -> dict:
         """Create annotation mapping to preserve full paths.
         
         HACK: Works around oras-py stripping paths to basename.
-        Maps each file to annotations that override the title.
+        Maps absolute paths (what we pass to ORAS) to annotations that preserve relative paths.
         See: https://github.com/oras-project/oras-py/issues/217
+        
+        Args:
+            abs_paths: Absolute paths passed to ORAS push
+            rel_paths: Relative paths to preserve in annotations
         """
         annotations = {}
-        for file_info in files:
-            annotations[file_info.path] = {
-                "org.opencontainers.image.title": file_info.path
+        for abs_path, rel_path in zip(abs_paths, rel_paths):
+            annotations[abs_path] = {
+                "org.opencontainers.image.title": rel_path
             }
         return annotations
     
-    def push_files(
-        self,
-        registry_ref: str,
-        files: List[FileInfo],
-        tag: str = "latest",
-        artifact_type: str = "application/vnd.modelops.bundle.v1",  # TODO: Set in manifest when oras-py supports it
-        ctx: Optional[ProjectContext] = None
-    ) -> str:
-        """Push files to registry and return manifest digest."""
-        if not files:
-            raise ValueError("No files to push")
-        
-        if ctx is None:
-            ctx = ProjectContext()
-        
-        # Prepare file references (need absolute paths for existence check)
-        file_refs = []
-        for file_info in files:
-            # Use absolute path for checking, but pass relative to ORAS
-            abs_path = ctx.root / file_info.path
-            if not abs_path.exists():
-                raise FileNotFoundError(f"File not found: {file_info.path}")
-            file_refs.append(str(file_info.path))  # Pass relative path as string to ORAS
-        
-        # HACK: Work around oras-py basename issue
-        # Create temp annotation file to preserve full paths in layer titles
-        # See docs/developer-notes.md#oras-py-path-stripping-issue
-        # and https://github.com/oras-project/oras-py/issues/217
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=True) as anno_file:
-            annotations = self._create_path_annotations(files)
-            json.dump(annotations, anno_file)
-            anno_file.flush()
-            
-            target = self._build_target(registry_ref, tag)
-            
-            # Create manifest annotations
-            manifest_annotations = {
-                "modelops-bundle.version": BUNDLE_VERSION,
-                "org.opencontainers.image.created": get_iso_timestamp(),
-            }
-            
-            # Push with ORAS
-            # Note: artifact_type is part of OCI Image Manifest v1.1.0 spec
-            # but oras-py doesn't directly support setting it via push parameters.
-            # It would need to be set in the manifest after creation.
-            response = self.client.push(
-                target=target,
-                files=file_refs,
-                annotation_file=anno_file.name,  # Pass temp file
-                manifest_annotations=manifest_annotations,
-            )
-        
-        # 1) Try digest from push response headers
-        digest = None
-        try:
-            digest = getattr(response, "headers", {}).get("Docker-Content-Digest")
-        except Exception:
-            pass
-        
-        # 2) Fall back to GET manifest (header + bytes) for canonical digest
-        if not digest:
-            # Use more retries since we just pushed
-            _, digest, _ = self.get_manifest_with_digest(registry_ref, tag, retries=5)
-        
-        return digest
-    
-    def pull_files(
-        self,
-        registry_ref: str,
-        reference: str = "latest",  # Can be tag or digest
-        output_dir: Path = Path("."),
-        ctx: Optional[ProjectContext] = None,
-        tag: Optional[str] = None  # Deprecated, for backward compat
-    ) -> List[Path]:
-        """Pull files from registry using tag or digest."""
-        if ctx is None:
-            ctx = ProjectContext()
-        
-        # Handle backward compat
-        if tag is not None:
-            reference = tag
-        
-        # Build target (works with both tags and digests)
-        if reference.startswith("sha256:"):
-            # It's a digest, use @ notation
-            target = f"{registry_ref}@{reference}"
-        else:
-            # It's a tag, use : notation
-            target = f"{registry_ref}:{reference}"
-        
-        # Pull with ORAS
-        files = self.client.pull(
-            target=target,
-            outdir=str(output_dir)
-        )
-        
-        return [Path(f) for f in files]
     
     def get_manifest(
         self,
@@ -295,41 +218,31 @@ class OrasAdapter:
         registry_ref: str,
         reference: str = "latest"  # Can be tag or digest
     ) -> RemoteState:
-        """Get remote state from manifest."""
-        try:
-            manifest, manifest_digest, _ = self.get_manifest_with_digest(registry_ref, reference)
-        except Exception as e:
-            # Registry might be empty or unreachable
-            raise RuntimeError(f"Failed to fetch manifest: {e}")
+        """Get remote state from BundleIndex (always required)."""
+        # First resolve to digest
+        manifest, manifest_digest, _ = self.get_manifest_with_digest(registry_ref, reference)
         
         # Guard against index/manifest list
         if manifest.get("manifests"):
-            raise ValueError(
-                f"Cannot get remote state for manifest index/list at {registry_ref}:{reference}. "
-                "This appears to be a multi-platform image, not a ModelOps bundle."
+            raise UnsupportedArtifactError(
+                f"{registry_ref}:{reference}",
+                manifest.get("mediaType", "manifest index/list")
             )
         
-        # Parse manifest to extract file info
+        # Get BundleIndex from manifest config
+        try:
+            index = self.get_index(registry_ref, manifest_digest)
+        except ValueError as e:
+            raise MissingIndexError(f"{registry_ref}:{reference}") from e
+        
+        # Convert index to RemoteState
         files = {}
-        layers = manifest.get("layers", [])
-        if not layers and not manifest.get("config"):
-            # Might be an index that slipped through
-            logger = logging.getLogger(__name__)
-            logger.warning(
-                f"Manifest at {registry_ref}:{reference} has no layers. "
-                "It might be an index or empty manifest."
+        for path, entry in index.files.items():
+            files[path] = FileInfo(
+                path=path,
+                digest=entry.digest,
+                size=entry.size
             )
-        
-        for layer in layers:
-            annotations = layer.get("annotations", {})
-            title = annotations.get("org.opencontainers.image.title")
-            
-            if title:
-                files[title] = FileInfo(
-                    path=title,
-                    digest=layer["digest"],
-                    size=layer["size"]
-                )
         
         return RemoteState(
             manifest_digest=manifest_digest,
@@ -387,21 +300,23 @@ class OrasAdapter:
         
         # Create path annotations for OCI files only (for backward compat)
         anno_file_path = None
+        abs_paths = []
+        rel_paths = []
         if oci_file_paths:
+            for abs_path, rel_path in oci_file_paths:
+                abs_paths.append(str(abs_path))
+                rel_paths.append(rel_path)
+            
+            # Create annotations with consistent absolute path keys
             with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as anno_file:
-                annotations = {}
-                for abs_path, rel_path in oci_file_paths:
-                    # Map absolute path to annotation that preserves relative path in layer title
-                    annotations[str(abs_path)] = {
-                        "org.opencontainers.image.title": rel_path
-                    }
+                annotations = self._create_path_annotations(abs_paths, rel_paths)
                 json.dump(annotations, anno_file)
                 anno_file.flush()
                 anno_file_path = anno_file.name
         
         try:
             # Push with index as manifest config
-            files_to_push = [str(abs_path) for abs_path, _ in oci_file_paths]
+            files_to_push = abs_paths  # Already converted to strings above
             
             # Push to registry
             push_args = {
@@ -444,13 +359,22 @@ class OrasAdapter:
             BundleIndex from manifest config
             
         Raises:
-            ValueError: If artifact is missing required BundleIndex config
+            MissingIndexError: If artifact is missing required BundleIndex config
         """
         target = self._build_target(registry_ref, digest)
         container = Container(target)
         
         # Get manifest
-        manifest = self.client.get_manifest(container)
+        try:
+            manifest = self.client.get_manifest(container)
+        except Exception as e:
+            import requests
+            if isinstance(e, requests.exceptions.HTTPError):
+                if e.response.status_code == 404:
+                    raise NotFoundError(f"Manifest not found: {target}")
+                elif e.response.status_code in (401, 403):
+                    raise AuthError(f"Authentication failed for {target}")
+            raise
         
         # Extract config descriptor
         cfg = manifest.get("config") or {}
@@ -459,13 +383,10 @@ class OrasAdapter:
         
         # Validate it's a BundleIndex
         if mt != BUNDLE_INDEX_MEDIA_TYPE:
-            raise ValueError(
-                f"Artifact missing required BundleIndex config "
-                f"(mediaType={BUNDLE_INDEX_MEDIA_TYPE}, got {mt})"
-            )
+            raise MissingIndexError(f"{registry_ref}@{digest[:12]}...")
         
         if not dg:
-            raise ValueError("Manifest config missing digest")
+            raise MissingIndexError(f"{registry_ref}@{digest[:12]}...")
         
         # Fetch config blob
         raw = self.client.get_blob(container, dg).content
@@ -482,9 +403,7 @@ class OrasAdapter:
         blob_store=None,  # Optional[BlobStore]
     ) -> None:
         """
-        Pull selected files to output directory.
-        
-        Caller is responsible for digest verification.
+        Pull selected files to output directory with digest verification.
         
         Args:
             registry_ref: Registry reference
@@ -492,7 +411,12 @@ class OrasAdapter:
             entries: List of BundleFileEntry to pull
             output_dir: Output directory
             blob_store: BlobStore instance (required if any BLOB entries)
+            
+        Raises:
+            DigestMismatchError: If any file fails digest verification
         """
+        from .errors import BlobProviderMissingError
+        
         target = self._build_target(registry_ref, digest)
         container = Container(target)
         
@@ -500,15 +424,19 @@ class OrasAdapter:
             dst = output_dir / entry.path
             dst.parent.mkdir(parents=True, exist_ok=True)
             
+            # Download based on storage type
             if entry.storage == StorageType.OCI:
                 # Download from registry
                 self.client.download_blob(container, entry.digest, str(dst))
             else:
                 # Download from blob storage
                 if not entry.blobRef or not blob_store:
-                    raise ValueError(
-                        f"Blob store required for {entry.path} "
-                        f"(storage={entry.storage})"
-                    )
+                    raise BlobProviderMissingError()
                 blob_store.get(entry.blobRef, dst)
+            
+            # Always verify digest
+            actual_digest = compute_digest(dst)
+            if actual_digest != entry.digest:
+                dst.unlink()  # Remove corrupted file
+                raise DigestMismatchError(entry.path, entry.digest, actual_digest)
 

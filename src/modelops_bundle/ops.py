@@ -46,7 +46,17 @@ def _build_storage_plan(plan: PushPlan, config: BundleConfig) -> StoragePushPlan
     
     for file_info in plan.manifest_files:
         file_path = Path(file_info.path)
-        storage_type = policy.classify(file_path, file_info.size)
+        storage_type, should_warn = policy.classify(file_path, file_info.size)
+        
+        # Note: We already checked for blob requirements in push_apply
+        # so should_warn should never be True here, but handle it anyway
+        if should_warn:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                f"File {file_info.path} ({file_info.size} bytes) would benefit from blob storage "
+                f"but no provider configured - storing in OCI"
+            )
         
         if storage_type == StorageType.OCI:
             oci_files.append(file_info)
@@ -304,18 +314,8 @@ def pull_preview(
     ref = reference or config.default_tag
     resolved_digest = adapter.resolve_tag_to_digest(config.registry_ref, ref)
     
-    # Get remote state
-    if config.storage.enabled:
-        # New index-based approach
-        try:
-            index = adapter.get_index(config.registry_ref, resolved_digest)
-            remote = _index_to_remote_state(index, resolved_digest)
-        except ValueError:
-            # Fall back to legacy if index not found
-            remote = adapter.get_remote_state(config.registry_ref, resolved_digest)
-    else:
-        # Legacy approach
-        remote = adapter.get_remote_state(config.registry_ref, resolved_digest)
+    # Get remote state (always from index via get_remote_state)
+    remote = adapter.get_remote_state(config.registry_ref, resolved_digest)
     
     # Create working state with deletion tracking
     working_state = TrackedWorkingState.from_tracked(tracked, ctx)
@@ -350,64 +350,54 @@ def pull_apply(
     preview: PullPreview,
     ctx: Optional[ProjectContext] = None
 ) -> PullResult:
-    """Phase 2: Execute pull using resolved digest from preview."""
+    """Phase 2: Execute pull with mandatory BundleIndex."""
     if ctx is None:
         ctx = ProjectContext()
     
+    from .errors import MissingIndexError, BlobProviderMissingError
+    
     adapter = OrasAdapter()
     
-    # Check if we should use index-based pull
-    if config.storage.enabled:
-        try:
-            # Get index by digest
-            index = adapter.get_index(config.registry_ref, preview.resolved_digest)
-            
-            # Initialize blob store if needed
-            blob_store = make_blob_store(config.storage)
-            
-            # Map preview files to index entries
-            entries_to_pull = []
-            for file_info in preview.will_update_or_add:
-                if file_info.path in index.files:
-                    entries_to_pull.append(index.files[file_info.path])
-            
-            # Pull selected files
-            if entries_to_pull:
-                adapter.pull_selected(
-                    registry_ref=config.registry_ref,
-                    digest=preview.resolved_digest,
-                    entries=entries_to_pull,
-                    output_dir=ctx.root,
-                    blob_store=blob_store
-                )
-                
-                # Verify digests after download
-                for entry in entries_to_pull:
-                    file_path = ctx.root / entry.path
-                    if file_path.exists():
-                        actual = compute_digest(file_path)
-                        if actual != entry.digest:
-                            file_path.unlink()  # Delete corrupted file
-                            raise ValueError(
-                                f"Digest mismatch for {entry.path}: "
-                                f"expected {entry.digest}, got {actual}"
-                            )
-        except ValueError:
-            # Fall back to legacy pull if no index
-            adapter.pull_files(
-                registry_ref=config.registry_ref,
-                reference=preview.resolved_digest,
-                output_dir=ctx.root,
-                ctx=ctx
+    # ALWAYS get index (no fallback)
+    try:
+        index = adapter.get_index(config.registry_ref, preview.resolved_digest)
+    except MissingIndexError as e:
+        # Re-raise with more context
+        raise MissingIndexError(
+            f"{config.registry_ref}@{preview.resolved_digest[:12]}..."
+        ) from e
+    
+    # Initialize blob store if needed
+    blob_store = None
+    has_blob_files = any(
+        entry.storage == StorageType.BLOB 
+        for entry in index.files.values()
+    )
+    if has_blob_files:
+        if not config.storage.uses_blob_storage:
+            raise BlobProviderMissingError()
+        blob_store = make_blob_store(config.storage)
+    
+    # Map preview files to index entries
+    entries_to_pull = []
+    for file_info in preview.will_update_or_add:
+        if file_info.path not in index.files:
+            # This shouldn't happen if preview was built correctly
+            raise ValueError(
+                f"File {file_info.path} in preview but not in index"
             )
-    else:
-        # Legacy pull
-        adapter.pull_files(
+        entries_to_pull.append(index.files[file_info.path])
+    
+    # Pull selected files (with built-in verification)
+    if entries_to_pull:
+        adapter.pull_selected(
             registry_ref=config.registry_ref,
-            reference=preview.resolved_digest,
+            digest=preview.resolved_digest,
+            entries=entries_to_pull,
             output_dir=ctx.root,
-            ctx=ctx
+            blob_store=blob_store
         )
+        # Note: pull_selected now includes digest verification
     
     # Delete local files if requested
     deleted_count = 0
@@ -495,9 +485,11 @@ def push_apply(
     force: bool = False,
     ctx: Optional[ProjectContext] = None
 ) -> str:
-    """Phase 2: Execute push and verify tag hasn't moved."""
+    """Phase 2: Execute push with mandatory BundleIndex."""
     if ctx is None:
         ctx = ProjectContext()
+    
+    from .errors import BlobStorageRequiredError, TagMovedError
     
     adapter = OrasAdapter()
     
@@ -506,27 +498,30 @@ def push_apply(
         current_digest = adapter.get_current_tag_digest(config.registry_ref, plan.tag)
         if current_digest != plan.tag_base_digest:
             if not force:
-                raise RuntimeError(
-                    f"Tag '{plan.tag}' has moved from {plan.tag_base_digest[:12]}... "
-                    f"to {current_digest[:12] if current_digest else 'unknown'}. "
-                    "Use --force to override."
+                raise TagMovedError(
+                    plan.tag,
+                    plan.tag_base_digest,
+                    current_digest or "unknown"
                 )
             # Log warning but proceed with force
             import logging
             logger = logging.getLogger(__name__)
             logger.warning(f"Tag '{plan.tag}' has moved but proceeding with --force")
     
-    # Check if storage is enabled - if so, use new index-based approach
-    if config.storage.enabled:
-        return _push_apply_with_index(config, plan, ctx)
+    # Check for blob storage requirements upfront
+    files_to_check = [(Path(f.path), f.size) for f in plan.manifest_files]
+    needs_blob = config.storage.check_files_for_blob_requirement(files_to_check)
+    if needs_blob:
+        raise BlobStorageRequiredError(needs_blob)
     
-    # Legacy push (will be removed)
-    manifest_digest = adapter.push_files(
-        registry_ref=config.registry_ref,
-        files=plan.manifest_files,
-        tag=plan.tag,
-        ctx=ctx
-    )
+    # Always use index-based push
+    manifest_digest = _push_apply_with_index(config, plan, ctx)
+    
+    # Verify tag didn't move during push (unless forced)
+    if not force:
+        final_digest = adapter.get_current_tag_digest(config.registry_ref, plan.tag)
+        if final_digest and final_digest != manifest_digest:
+            raise TagMovedError(plan.tag, manifest_digest, final_digest)
     
     # Update sync state
     state = load_state(ctx)

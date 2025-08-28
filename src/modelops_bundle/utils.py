@@ -159,7 +159,7 @@ def format_storage_display(storage_type, config=None, entry=None, direction=None
                 else:
                     display = "blob/filesystem"
         # Fall back to config if no blobRef
-        elif config and hasattr(config, 'storage') and config.storage.enabled:
+        elif config and hasattr(config, 'storage') and config.storage.uses_blob_storage:
             provider = config.storage.provider
             container = config.storage.container
             

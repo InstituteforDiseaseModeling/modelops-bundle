@@ -7,8 +7,11 @@ import pytest
 import warnings
 
 from modelops_bundle.oras import OrasAdapter
-from modelops_bundle.core import FileInfo
+from modelops_bundle.core import BundleConfig, FileInfo, TrackedFiles
+from modelops_bundle.context import ProjectContext
+from modelops_bundle.ops import push, save_config, save_tracked
 from modelops_bundle.utils import compute_digest
+from modelops_bundle.errors import UnsupportedArtifactError
 
 from tests.test_registry_utils import skip_if_no_registry
 
@@ -32,6 +35,9 @@ class TestDigestConsistency:
             try:
                 os.chdir(tmpdir)
                 
+                # Initialize project
+                ctx = ProjectContext.init()
+                
                 # Create test files
                 file1 = Path("file1.txt")
                 file1.write_text("content1")
@@ -39,30 +45,22 @@ class TestDigestConsistency:
                 file2 = Path("subdir/file2.txt")
                 file2.write_text("content2")
                 
-                # Create file infos with proper digest and size
-                files = [
-                    FileInfo(
-                        path="file1.txt",
-                        digest=compute_digest(file1),
-                        size=file1.stat().st_size
-                    ),
-                    FileInfo(
-                        path="subdir/file2.txt",
-                        digest=compute_digest(file2),
-                        size=file2.stat().st_size
-                    ),
-                ]
-                
-                # Push and get digest
-                adapter = OrasAdapter()
-                push_digest = adapter.push_files(
+                # Set up config and tracked files
+                config = BundleConfig(
                     registry_ref=registry_ref,
-                    files=files,
-                    tag="v1",
-                    ctx=type('Context', (), {'root': Path.cwd()})()
+                    default_tag="v1"
                 )
+                save_config(config, ctx)
+                
+                tracked = TrackedFiles()
+                tracked.add("file1.txt", "subdir/file2.txt")
+                save_tracked(tracked, ctx)
+                
+                # Push using production function
+                push_digest = push(config, tracked, tag="v1", ctx=ctx)
                 
                 # Get remote state and compare digests
+                adapter = OrasAdapter()
                 remote_state = adapter.get_remote_state(registry_ref, "v1")
                 
                 # Both digests should be identical
@@ -81,23 +79,28 @@ class TestDigestConsistency:
             try:
                 os.chdir(tmpdir)
                 
+                # Initialize project
+                ctx = ProjectContext.init()
+                
                 # Create a simple test file
                 test_file = Path("test.txt")
                 test_file.write_text("test content")
-                files = [FileInfo(
-                    path="test.txt",
-                    digest=compute_digest(test_file),
-                    size=test_file.stat().st_size
-                )]
+                
+                # Set up config and tracked files
+                config = BundleConfig(
+                    registry_ref=registry_ref,
+                    default_tag="latest"
+                )
+                save_config(config, ctx)
+                
+                tracked = TrackedFiles()
+                tracked.add("test.txt")
+                save_tracked(tracked, ctx)
                 
                 # Push to registry
+                push_digest = push(config, tracked, tag="latest", ctx=ctx)
+                
                 adapter = OrasAdapter()
-                push_digest = adapter.push_files(
-                    registry_ref=registry_ref,
-                    files=files,
-                    tag="latest",
-                    ctx=type('Context', (), {'root': Path.cwd()})()
-                )
             
                 # Get manifest with digest using new method
                 manifest, header_digest, raw_bytes = adapter.get_manifest_with_digest(
@@ -126,23 +129,29 @@ class TestDigestConsistency:
             try:
                 os.chdir(tmpdir)
                 
+                # Initialize project
+                ctx = ProjectContext.init()
+                
                 # Create test file
                 test_file = Path("test.txt")
                 test_file.write_text("test")
-                files = [FileInfo(
-                    path="test.txt",
-                    digest=compute_digest(test_file),
-                    size=test_file.stat().st_size
-                )]
+                
+                # Set up config and tracked files
+                config = BundleConfig(
+                    registry_ref=registry_ref,
+                    default_tag="test"
+                )
+                save_config(config, ctx)
+                
+                tracked = TrackedFiles()
+                tracked.add("test.txt")
+                save_tracked(tracked, ctx)
                 
                 # Push to registry
+                push(config, tracked, tag="test", ctx=ctx)
+            
+                # Create adapter for testing
                 adapter = OrasAdapter()
-                adapter.push_files(
-                    registry_ref=registry_ref,
-                    files=files,
-                    tag="test",
-                    ctx=type('Context', (), {'root': Path.cwd()})()
-                )
             
                 # Mock the response to not have Docker-Content-Digest header
                 original_do_request = adapter.client.do_request
@@ -180,34 +189,30 @@ class TestDigestConsistency:
             try:
                 os.chdir(tmpdir)
                 
+                # Initialize project
+                ctx = ProjectContext.init()
+                
                 # Create test files
                 app_file = Path("app.py")
                 app_file.write_text("print('hello')")
                 config_file = Path("config.yaml")
                 config_file.write_text("key: value")
                 
-                files = [
-                    FileInfo(
-                        path="app.py",
-                        digest=compute_digest(app_file),
-                        size=app_file.stat().st_size
-                    ),
-                    FileInfo(
-                        path="config.yaml",
-                        digest=compute_digest(config_file),
-                        size=config_file.stat().st_size
-                    ),
-                ]
+                # Set up config and tracked files
+                config = BundleConfig(
+                    registry_ref=registry_ref,
+                    default_tag="stable"
+                )
+                save_config(config, ctx)
                 
-                adapter = OrasAdapter()
+                tracked = TrackedFiles()
+                tracked.add("app.py", "config.yaml")
+                save_tracked(tracked, ctx)
                 
                 # Push and record digest
-                digest1 = adapter.push_files(
-                    registry_ref=registry_ref,
-                    files=files,
-                    tag="stable",
-                    ctx=type('Context', (), {'root': Path.cwd()})()
-                )
+                digest1 = push(config, tracked, tag="stable", ctx=ctx)
+                
+                adapter = OrasAdapter()
             
                 # Get manifest directly
                 manifest, digest2, _ = adapter.get_manifest_with_digest(registry_ref, "stable")
@@ -236,22 +241,28 @@ class TestDigestConsistency:
             try:
                 os.chdir(tmpdir)
                 
+                # Initialize project
+                ctx = ProjectContext.init()
+                
                 # Create and push a test file
                 test_file = Path("test.txt")
                 test_file.write_text("test")
-                files = [FileInfo(
-                    path="test.txt",
-                    digest=compute_digest(test_file),
-                    size=test_file.stat().st_size
-                )]
+                
+                # Set up config and tracked files
+                config = BundleConfig(
+                    registry_ref=registry_ref,
+                    default_tag="head-test"
+                )
+                save_config(config, ctx)
+                
+                tracked = TrackedFiles()
+                tracked.add("test.txt")
+                save_tracked(tracked, ctx)
+                
+                # Push to registry
+                push_digest = push(config, tracked, tag="head-test", ctx=ctx)
                 
                 adapter = OrasAdapter()
-                push_digest = adapter.push_files(
-                    registry_ref=registry_ref,
-                    files=files,
-                    tag="head-test",
-                    ctx=type('Context', (), {'root': Path.cwd()})()
-                )
                 
                 # Use get_digest_only which should try HEAD first
                 digest_only = adapter.get_digest_only(registry_ref, "head-test")
@@ -271,22 +282,28 @@ class TestDigestConsistency:
             try:
                 os.chdir(tmpdir)
                 
+                # Initialize project
+                ctx = ProjectContext.init()
+                
                 # Create and push a test file
                 test_file = Path("test.txt")
                 test_file.write_text("consistency test")
-                files = [FileInfo(
-                    path="test.txt",
-                    digest=compute_digest(test_file),
-                    size=test_file.stat().st_size
-                )]
+                
+                # Set up config and tracked files
+                config = BundleConfig(
+                    registry_ref=registry_ref,
+                    default_tag="retry-test"
+                )
+                save_config(config, ctx)
+                
+                tracked = TrackedFiles()
+                tracked.add("test.txt")
+                save_tracked(tracked, ctx)
+                
+                # Push to registry
+                push(config, tracked, tag="retry-test", ctx=ctx)
                 
                 adapter = OrasAdapter()
-                adapter.push_files(
-                    registry_ref=registry_ref,
-                    files=files,
-                    tag="retry-test",
-                    ctx=type('Context', (), {'root': Path.cwd()})()
-                )
                 
                 # Mock to simulate 404 on first attempt, success on second
                 original_do_request = adapter.client.do_request
@@ -326,22 +343,28 @@ class TestDigestConsistency:
             try:
                 os.chdir(tmpdir)
                 
+                # Initialize project
+                ctx = ProjectContext.init()
+                
                 # Create normal bundle first
                 test_file = Path("test.txt")
                 test_file.write_text("test")
-                files = [FileInfo(
-                    path="test.txt",
-                    digest=compute_digest(test_file),
-                    size=test_file.stat().st_size
-                )]
+                
+                # Set up config and tracked files
+                config = BundleConfig(
+                    registry_ref=registry_ref,
+                    default_tag="normal"
+                )
+                save_config(config, ctx)
+                
+                tracked = TrackedFiles()
+                tracked.add("test.txt")
+                save_tracked(tracked, ctx)
+                
+                # Push to registry
+                push(config, tracked, tag="normal", ctx=ctx)
                 
                 adapter = OrasAdapter()
-                adapter.push_files(
-                    registry_ref=registry_ref,
-                    files=files,
-                    tag="normal",
-                    ctx=type('Context', (), {'root': Path.cwd()})()
-                )
                 
                 # Mock to return an index manifest
                 original_do_request = adapter.client.do_request
@@ -364,10 +387,10 @@ class TestDigestConsistency:
                 monkeypatch.setattr(adapter.client, 'do_request', mock_do_request)
                 
                 # This should detect index and raise error
-                with pytest.raises(ValueError) as exc:
+                with pytest.raises(UnsupportedArtifactError) as exc:
                     adapter.get_manifest_with_digest(registry_ref, "normal")
                 
-                assert "manifest index/list" in str(exc.value)
-                assert "not a single artifact" in str(exc.value)
+                assert "normal" in str(exc.value)
+                assert "index" in str(exc.value).lower()
             finally:
                 os.chdir(old_cwd)

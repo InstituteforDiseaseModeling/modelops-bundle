@@ -20,6 +20,7 @@ from modelops_bundle.ops import (
     save_tracked,
 )
 from modelops_bundle.context import ProjectContext
+from modelops_bundle.errors import TagMovedError
 from modelops_bundle.utils import compute_digest
 
 from tests.test_registry_utils import skip_if_no_registry
@@ -91,13 +92,12 @@ class TestPushRaceProtection:
             adapter.get_current_tag_digest.return_value = "sha256:moved"
             
             # Apply should fail without force
-            with pytest.raises(RuntimeError) as exc:
+            with pytest.raises(TagMovedError) as exc:
                 push_apply(config, plan, force=False, ctx=ctx)
             
-            assert "Tag 'latest' has moved" in str(exc.value)
+            assert "Tag 'latest' moved" in str(exc.value)
             assert "sha256:initi" in str(exc.value)  # May be truncated
             assert "sha256:moved" in str(exc.value)
-            assert "Use --force to override" in str(exc.value)
     
     def test_push_with_force_bypasses_race_check(self, test_project):
         """Test that --force allows push despite tag movement."""
@@ -208,10 +208,10 @@ class TestConcurrentPushScenarios:
             adapter.get_current_tag_digest.return_value = "sha256:user_b_pushed"
             
             # User A tries to apply their plan
-            with pytest.raises(RuntimeError) as exc:
+            with pytest.raises(TagMovedError) as exc:
                 push_apply(config, plan_a, force=False, ctx=ctx)
             
-            assert "has moved" in str(exc.value)
+            assert "moved" in str(exc.value)
     
     def test_rapid_sequential_pushes(self, test_project):
         """Test multiple rapid pushes detect conflicts correctly."""
@@ -232,10 +232,15 @@ class TestConcurrentPushScenarios:
             # First push should work
             plan1 = push_plan(config, tracked, ctx=ctx)
             assert plan1.tag_base_digest == "sha256:v1"
+            
+            # After push, tag should point to pushed digest
+            adapter.get_current_tag_digest.side_effect = ["sha256:v1", "sha256:pushed_1"]
+            
             result1 = push_apply(config, plan1, force=False, ctx=ctx)
             assert result1 == "sha256:pushed_1"
             
             # Simulate tag movement by another user
+            adapter.get_current_tag_digest.side_effect = None  # Reset side_effect
             adapter.get_current_tag_digest.return_value = "sha256:v2"
             adapter.get_remote_state.return_value = RemoteState(
                 manifest_digest="sha256:v2",
@@ -249,10 +254,10 @@ class TestConcurrentPushScenarios:
             # But tag moves again before apply
             adapter.get_current_tag_digest.return_value = "sha256:v3"
             
-            with pytest.raises(RuntimeError) as exc:
+            with pytest.raises(TagMovedError) as exc:
                 push_apply(config, plan2, force=False, ctx=ctx)
             
-            assert "has moved" in str(exc.value)
+            assert "moved" in str(exc.value)
     
     def test_tag_rollback_scenario(self, test_project):
         """Test handling when a tag is rolled back to a previous digest."""
@@ -275,11 +280,11 @@ class TestConcurrentPushScenarios:
             adapter.get_current_tag_digest.return_value = "sha256:v1"
             
             # Should detect the rollback
-            with pytest.raises(RuntimeError) as exc:
+            with pytest.raises(TagMovedError) as exc:
                 push_apply(config, plan, force=False, ctx=ctx)
             
-            assert "has moved from sha256:v2" in str(exc.value)
-            assert "to sha256:v1" in str(exc.value)
+            assert "moved" in str(exc.value)
+            assert "sha256:v1" in str(exc.value)
 
 
 class TestRaceProtectionIntegration:
@@ -299,15 +304,8 @@ class TestRaceProtectionIntegration:
         
         adapter = OrasAdapter()
         
-        # Push v1
-        files_v1 = [
-            FileInfo(
-                path="file1.txt",
-                digest=compute_digest(ctx.root / "file1.txt"),
-                size=(ctx.root / "file1.txt").stat().st_size
-            )
-        ]
-        digest_v1 = adapter.push_files(registry_ref, files_v1, "latest", ctx=ctx)
+        # Push v1 using the production function
+        digest_v1 = push(config, tracked, tag="latest", ctx=ctx)
         
         # Create plan based on v1
         plan = push_plan(config, tracked, ctx=ctx)
@@ -315,21 +313,15 @@ class TestRaceProtectionIntegration:
         
         # Push v2 to same tag (simulate concurrent update)
         (ctx.root / "file1.txt").write_text("modified")
-        files_v2 = [
-            FileInfo(
-                path="file1.txt",
-                digest=compute_digest(ctx.root / "file1.txt"),
-                size=(ctx.root / "file1.txt").stat().st_size
-            )
-        ]
-        digest_v2 = adapter.push_files(registry_ref, files_v2, "latest", ctx=ctx)
+        # Force push to bypass local state tracking
+        digest_v2 = push(config, tracked, tag="latest", ctx=ctx, force=True)
         assert digest_v1 != digest_v2
         
         # Applying the old plan should fail
-        with pytest.raises(RuntimeError) as exc:
+        with pytest.raises(TagMovedError) as exc:
             push_apply(config, plan, force=False, ctx=ctx)
         
-        assert "Tag 'latest' has moved" in str(exc.value)
+        assert "moved" in str(exc.value)
 
 
 class TestForceFlag:

@@ -22,7 +22,10 @@ from modelops_bundle.ops import (
     load_state,
     load_tracked,
 )
-from modelops_bundle.utils import compute_digest
+from modelops_bundle.utils import compute_digest, get_iso_timestamp
+from modelops_bundle.storage_models import BundleIndex, BundleFileEntry, StorageType
+from modelops_bundle.constants import BUNDLE_VERSION
+from modelops_bundle.errors import MissingIndexError
 
 from tests.test_registry_utils import skip_if_no_registry
 
@@ -38,8 +41,44 @@ class BaseMockAdapter:
             return self.remote.manifest_digest
         return f"sha256:{'0' * 64}"  # Fake digest
     def get_index(self, ref, digest):
-        # Mock: no index available, fall back to legacy
-        raise ValueError("No BundleIndex found - fall back to legacy")
+        # Create a mock BundleIndex from remote state
+        if not self.remote:
+            raise MissingIndexError(f"{ref}@{digest[:12]}...")
+        
+        index = BundleIndex(
+            version=BUNDLE_VERSION,
+            created=get_iso_timestamp(),
+            files={}
+        )
+        
+        # Convert RemoteState files to BundleIndex entries
+        for path, file_info in self.remote.files.items():
+            index.files[path] = BundleFileEntry(
+                path=path,
+                digest=file_info.digest,
+                size=file_info.size,
+                storage=StorageType.OCI,
+                blobRef=None
+            )
+        
+        return index
+    
+    def pull_selected(self, registry_ref, digest, entries, output_dir, blob_store=None):
+        """Mock implementation of pull_selected."""
+        # Write files based on the entries
+        for entry in entries:
+            file_path = output_dir / entry.path
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Mock file content based on path
+            if entry.path == "unchanged.txt":
+                file_path.write_text("same content")
+            elif entry.path == "modified.txt":
+                file_path.write_text("original content")  # Remote version
+            elif entry.path == "remote_only.txt":
+                file_path.write_text("remote file content")
+            else:
+                file_path.write_text("mock content")
 
 
 REGISTRY_AVAILABLE = os.environ.get("REGISTRY_URL", "localhost:5555")
@@ -119,23 +158,16 @@ class TestPullMirrorSemantics:
         class MockAdapter(BaseMockAdapter):
             def __init__(self):
                 super().__init__(remote)
+                self.pulled_files = pulled_files  # Track what gets pulled
             def get_remote_state(self, ref, tag):
                 return remote
             
-            def pull_files(self, registry_ref=None, reference=None, output_dir=None, ctx=None, **kwargs):
-                # Record that pull_files was called (mirrors ALL remote files)
-                # In real implementation, this pulls EVERYTHING from remote
-                for path in remote.files.keys():
-                    pulled_files.append(path)
-                    file_path = output_dir / path
-                    file_path.parent.mkdir(parents=True, exist_ok=True)
-                    
-                    if path == "unchanged.txt":
-                        file_path.write_text("same content")
-                    elif path == "modified.txt":
-                        file_path.write_text("original content")
-                    elif path == "remote_only.txt":
-                        file_path.write_text("remote file content")
+            def pull_selected(self, registry_ref, digest, entries, output_dir, blob_store=None):
+                # Override to track what gets pulled
+                for entry in entries:
+                    self.pulled_files.append(entry.path)
+                # Call parent implementation
+                super().pull_selected(registry_ref, digest, entries, output_dir, blob_store)
         
         import modelops_bundle.ops
         original_adapter = modelops_bundle.ops.OrasAdapter
@@ -145,11 +177,11 @@ class TestPullMirrorSemantics:
             # Pull with overwrite (required due to local changes and deletions)
             result = ops_pull(config, tracked, overwrite=True, ctx=ctx)
             
-            # CRITICAL: Verify ALL remote files were pulled, not selective
-            assert len(pulled_files) == 3
-            assert "unchanged.txt" in pulled_files  # Even unchanged files get pulled!
-            assert "modified.txt" in pulled_files
-            assert "remote_only.txt" in pulled_files
+            # Verify ONLY changed files were pulled (new optimized behavior)
+            assert len(pulled_files) == 2
+            assert "modified.txt" in pulled_files  # Modified, so pulled
+            assert "remote_only.txt" in pulled_files  # New file, so pulled
+            # unchanged.txt NOT in pulled_files - optimization!
             
             # Verify local state matches remote exactly (mirror)
             assert unchanged.read_text() == "same content"  # Still same
@@ -171,8 +203,8 @@ class TestPullMirrorSemantics:
         finally:
             modelops_bundle.ops.OrasAdapter = original_adapter
     
-    def test_pull_does_not_skip_unchanged_files(self, tmp_path, monkeypatch):
-        """Test that even unchanged files are pulled (true mirror behavior)."""
+    def test_pull_optimizes_unchanged_files(self, tmp_path, monkeypatch):
+        """Test that pull optimizes by skipping unchanged files."""
         monkeypatch.chdir(tmp_path)
         
         # Setup project
@@ -233,16 +265,16 @@ class TestPullMirrorSemantics:
             def get_remote_state(self, ref, tag):
                 return remote
             
-            def pull_files(self, registry_ref=None, reference=None, output_dir=None, ctx=None, **kwargs):
-                # Mirror behavior: pulls ALL files from remote
-                for path in remote.files.keys():
-                    files_pulled.add(path)
-                    file_path = output_dir / path
-                    if path == "file1.txt":
+            def pull_selected(self, registry_ref, digest, entries, output_dir, blob_store=None):
+                # New optimized behavior: only pull requested entries
+                for entry in entries:
+                    files_pulled.add(entry.path)
+                    file_path = output_dir / entry.path
+                    if entry.path == "file1.txt":
                         file_path.write_text("content1")
-                    elif path == "file2.txt":
+                    elif entry.path == "file2.txt":
                         file_path.write_text("content2")
-                    elif path == "file3.txt":
+                    elif entry.path == "file3.txt":
                         file_path.write_text("new content")
         
         import modelops_bundle.ops
@@ -253,8 +285,8 @@ class TestPullMirrorSemantics:
             # Pull - should pull everything even though file1 and file2 are unchanged
             result = ops_pull(config, tracked, overwrite=False, ctx=ctx)
             
-            # CRITICAL: Verify ALL files were pulled, including unchanged
-            assert files_pulled == {"file1.txt", "file2.txt", "file3.txt"}
+            # Optimized: only changed file (file3.txt) should be pulled
+            assert files_pulled == {"file3.txt"}  # Only new file pulled
             
             # Verify new file was added
             assert (tmp_path / "file3.txt").exists()

@@ -13,6 +13,7 @@ from modelops_bundle.core import (
 )
 from modelops_bundle.context import ProjectContext
 from modelops_bundle.utils import compute_digest
+from modelops_bundle.errors import MissingIndexError
 
 
 @pytest.fixture
@@ -68,10 +69,11 @@ class TestPushToNewTag:
             # Mock: New tag doesn't exist in registry
             adapter.get_remote_state.side_effect = Exception("Tag not found")
             adapter.get_current_tag_digest.return_value = None  # Tag doesn't exist
-            adapter.get_index.side_effect = ValueError("No index - fall back to legacy")
+            # Since we no longer have legacy fallback, this shouldn't be called
+            # but if it is, it should raise MissingIndexError
+            adapter.get_index.side_effect = MissingIndexError("test/repo@sha256:...")
             
-            # Mock: Push succeeds
-            adapter.push_files.return_value = "sha256:newdigest"
+            # Mock: Push succeeds (only index-based now)
             adapter.push_with_index_config.return_value = "sha256:newdigest"
             
             # Mock load functions
@@ -83,25 +85,16 @@ class TestPushToNewTag:
                 # Execute push to new tag
                 digest = push(mock_config, mock_tracked, tag="v1.0", ctx=mock_context)
                 
-                # Verify push was called (either legacy or index-based)
-                assert adapter.push_files.called or adapter.push_with_index_config.called
+                # Verify push was called (always index-based now)
+                assert adapter.push_with_index_config.called
                 
-                # For index-based push, check the index was built with all files
-                if adapter.push_with_index_config.called:
-                    call_args = adapter.push_with_index_config.call_args
-                    index = call_args.kwargs.get('index')
-                    assert index is not None
-                    assert len(index.files) == 2
-                    assert "file1.txt" in index.files
-                    assert "file2.txt" in index.files
-                else:
-                    # Legacy push_files check
-                    call_args = adapter.push_files.call_args
-                    pushed_files = call_args.kwargs.get('files')
-                    assert pushed_files is not None
-                    assert len(pushed_files) == 2
-                    assert any(f.path == "file1.txt" for f in pushed_files)
-                    assert any(f.path == "file2.txt" for f in pushed_files)
+                # Check the index was built with all files
+                call_args = adapter.push_with_index_config.call_args
+                index = call_args.kwargs.get('index')
+                assert index is not None
+                assert len(index.files) == 2
+                assert "file1.txt" in index.files
+                assert "file2.txt" in index.files
     
     def test_push_to_existing_tag_with_no_changes(self, mock_context, mock_config, mock_tracked):
         """Test that pushing to existing tag with no changes is optimized."""
@@ -172,9 +165,11 @@ class TestSyncStateBugs:
                 }
             )
             
-            # Mock push succeeds
-            adapter.push_files.return_value = "sha256:newdigest"
-            adapter.get_current_tag_digest.return_value = "sha256:olddigest"  # Existing tag
+            # Mock push succeeds (use push_with_index_config now)
+            adapter.push_with_index_config.return_value = "sha256:newdigest"
+            # Tag stays at olddigest until after push, then it's newdigest
+            # The sequence: plan (old), apply-check (old), after-push-check (new)
+            adapter.get_current_tag_digest.side_effect = ["sha256:olddigest", "sha256:olddigest", "sha256:newdigest"]
             
             saved_state = None
             def capture_state(state, ctx):

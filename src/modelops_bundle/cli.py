@@ -24,7 +24,7 @@ from .ops import (
 )
 from .oras import OrasAdapter
 from .working_state import TrackedWorkingState
-from .core import RemoteStatus
+from .core import RemoteStatus, RemoteState
 
 
 app = typer.Typer(help="ModelOps-Bundle - OCI artifact-based model bundle synchronization")
@@ -406,7 +406,8 @@ def status(
         table.add_column("File", style="cyan")
         table.add_column("Status")
         table.add_column("Size", justify="right")
-        if config.storage and config.storage.enabled:
+        # Show storage column if using blob storage or explicit mode
+        if config.storage.uses_blob_storage or config.storage.mode != "auto":
             table.add_column("Storage", style="dim")
         
         # Use summary for a cleaner display
@@ -445,21 +446,18 @@ def status(
         
         # Try to get storage info from remote if available
         storage_info = {}
-        if config.storage and config.storage.enabled and remote:
+        if remote:
             try:
                 # Try to get index for storage info  
-                try:
-                    latest_digest = adapter.resolve_tag_to_digest(config.registry_ref, config.default_tag)
-                    from .storage_models import BundleIndex
-                    index = adapter.get_index(config.registry_ref, latest_digest)
-                    for file_path, entry in index.files.items():
-                        storage_info[file_path] = format_storage_display(
-                            entry.storage, 
-                            config=config,
-                            entry=entry
-                        )
-                except:
-                    pass
+                latest_digest = adapter.resolve_tag_to_digest(config.registry_ref, config.default_tag)
+                from .storage_models import BundleIndex
+                index = adapter.get_index(config.registry_ref, latest_digest)
+                for file_path, entry in index.files.items():
+                    storage_info[file_path] = format_storage_display(
+                        entry.storage, 
+                        config=config,
+                        entry=entry
+                    )
             except:
                 pass
         
@@ -469,15 +467,14 @@ def status(
         for path, change_type, file_info in sorted(all_items):
             # Determine storage location
             storage = "-"
-            if config.storage and config.storage.enabled:
-                if change_type not in [ChangeType.DELETED_LOCAL, ChangeType.DELETED_REMOTE]:
-                    if path in storage_info:
-                        # Use remote storage info if available
-                        storage = storage_info[path]
-                    elif file_info and config.storage.enabled:
-                        # For local files, classify based on policy
-                        storage_type = config.storage.classify(Path(path), file_info.size)
-                        storage = format_storage_display(storage_type, config=config)
+            if change_type not in [ChangeType.DELETED_LOCAL, ChangeType.DELETED_REMOTE]:
+                if path in storage_info:
+                    # Use remote storage info if available
+                    storage = storage_info[path]
+                elif file_info:
+                    # For local files, classify based on policy
+                    storage_type, _ = config.storage.classify(Path(path), file_info.size)
+                    storage = format_storage_display(storage_type, config=config)
             
             # Build row data
             row_data = [
@@ -485,7 +482,7 @@ def status(
                 status_map.get(change_type, str(change_type)),
                 humanize_size(file_info.size) if file_info else "-"
             ]
-            if config.storage and config.storage.enabled:
+            if config.storage.uses_blob_storage or config.storage.mode != "auto":
                 row_data.append(storage)
             
             # Always add row, even for deleted files where file_info is None
@@ -606,11 +603,11 @@ def push(
     if plan.files_to_upload:
         console.print("\n[yellow]Changes to push:[/yellow]")
         for file in plan.files_to_upload:
-            # Determine storage destination if storage is enabled
+            # Determine storage destination
             storage_display = ""
-            if config.storage and config.storage.enabled:
+            if config.storage.uses_blob_storage:
                 from .storage_models import StorageType
-                storage_type = config.storage.classify(Path(file.path), file.size)
+                storage_type, _ = config.storage.classify(Path(file.path), file.size)
                 storage_display = " " + format_storage_display(storage_type, config=config, direction="→")
             console.print(f"  [green]↑[/green] {file.path} ({humanize_size(file.size)}){storage_display}")
     
@@ -715,36 +712,35 @@ def pull(
     
     if preview.will_update_or_add:
         console.print("\n[yellow]Files from remote:[/yellow]")
-        # Try to get storage info from remote index if available
+        # Try to get storage info from remote index
         storage_info = {}
-        if config.storage and config.storage.enabled:
-            try:
-                from .storage_models import BundleIndex
-                adapter = OrasAdapter()
-                # Use the resolved digest from the preview
-                if hasattr(preview, 'resolved_digest') and preview.resolved_digest:
-                    try:
-                        index = adapter.get_index(config.registry_ref, preview.resolved_digest)
-                        for file_path, entry in index.files.items():
-                            storage_info[file_path] = format_storage_display(
-                                entry.storage,
-                                config=config,
-                                entry=entry,
-                                direction="←"
-                            )
-                    except:
-                        pass
-            except:
-                pass
+        try:
+            from .storage_models import BundleIndex
+            adapter = OrasAdapter()
+            # Use the resolved digest from the preview
+            if hasattr(preview, 'resolved_digest') and preview.resolved_digest:
+                try:
+                    index = adapter.get_index(config.registry_ref, preview.resolved_digest)
+                    for file_path, entry in index.files.items():
+                        storage_info[file_path] = format_storage_display(
+                            entry.storage,
+                            config=config,
+                            entry=entry,
+                            direction="←"
+                        )
+                except:
+                    pass
+        except:
+            pass
         
         for file in preview.will_update_or_add:
             storage_display = ""
             if file.path in storage_info:
                 storage_display = " " + storage_info[file.path]
-            elif config.storage and config.storage.enabled:
+            else:
                 # Fallback: classify based on policy if no index info
                 from .storage_models import StorageType
-                storage_type = config.storage.classify(Path(file.path), file.size)
+                storage_type, _ = config.storage.classify(Path(file.path), file.size)
                 storage_display = " " + format_storage_display(storage_type, config=config, direction="←")
             console.print(f"  [blue]↓[/blue] {file.path} ({humanize_size(file.size)}){storage_display}")
     
@@ -816,25 +812,24 @@ def manifest(
         resolved_digest = adapter.resolve_tag_to_digest(config.registry_ref, reference)
         manifest = adapter.get_manifest(config.registry_ref, resolved_digest)
         
-        # Try index-based approach first
+        # Get storage info from index if available
         storage_info = {}
-        if config.storage.enabled:
-            try:
-                from .storage_models import StorageType
-                index = adapter.get_index(config.registry_ref, resolved_digest)
-                # Build remote state from index
-                from .ops import _index_to_remote_state
-                remote = _index_to_remote_state(index, resolved_digest)
-                # Store storage info for display
-                for path, entry in index.files.items():
-                    storage_info[path] = format_storage_display(
-                        entry.storage,
-                        config=config,
-                        entry=entry
-                    )
-            except ValueError:
-                # Fall back to legacy (remote already obtained above)
-                pass
+        try:
+            from .storage_models import StorageType
+            index = adapter.get_index(config.registry_ref, resolved_digest)
+            # Build remote state from index
+            from .ops import _index_to_remote_state
+            remote = _index_to_remote_state(index, resolved_digest)
+            # Store storage info for display
+            for path, entry in index.files.items():
+                storage_info[path] = format_storage_display(
+                    entry.storage,
+                    config=config,
+                    entry=entry
+                )
+        except MissingIndexError:
+            # No index available - older bundle format
+            pass
         
         # Display manifest info
         console.print(f"\n[bold]Manifest for {config.registry_ref}:{reference}[/bold]")

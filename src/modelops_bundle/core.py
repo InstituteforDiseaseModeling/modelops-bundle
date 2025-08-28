@@ -32,7 +32,7 @@ class BundleConfig(BaseModel):
     
     registry_ref: str  # e.g. localhost:5555/epi_model
     default_tag: str = "latest"
-    storage: StoragePolicy = StoragePolicy()  # Default: hybrid mode (auto)
+    storage: StoragePolicy = Field(default_factory=StoragePolicy)  # Default: auto mode
     # TODO: Add artifact_type when oras-py supports setting it in manifests
 
 

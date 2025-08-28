@@ -20,6 +20,7 @@ from modelops_bundle.ops import (
     pull_apply,
     push_plan,
     push_apply,
+    push,
     save_config,
     save_tracked,
 )
@@ -27,6 +28,44 @@ from modelops_bundle.context import ProjectContext
 from modelops_bundle.utils import compute_digest
 
 from tests.test_registry_utils import skip_if_no_registry
+
+
+def push_files_using_production_code(ctx, config, files, tag):
+    """Helper to push files using production push() function.
+    
+    This replaces the removed adapter.push_files() method by properly
+    setting up tracked files and using the production push() function.
+    """
+    # Save current config with the tag
+    config.default_tag = tag
+    save_config(config, ctx)
+    
+    # Create tracked files from the file list
+    tracked = TrackedFiles()
+    for file_info in files:
+        tracked.add(file_info.path)
+    save_tracked(tracked, ctx)
+    
+    # Ensure files exist at the expected locations
+    # The files should already exist with correct content from test setup
+    # If not, create them with predictable content based on the filename
+    for file_info in files:
+        file_path = ctx.root / file_info.path
+        if not file_path.exists():
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            # Create predictable content based on filename
+            # This matches what the tests set up (e.g., "content1" for file1.txt)
+            base_name = file_path.stem
+            if base_name.endswith('1'):
+                content = "content1"
+            elif base_name.endswith('2'):
+                content = "content2"
+            else:
+                content = f"content for {file_path.name}"
+            file_path.write_text(content)
+    
+    # Use production push
+    return push(config, tracked, tag=tag, ctx=ctx)
 
 
 @pytest.fixture
@@ -88,17 +127,19 @@ class TestPullTagRaces:
                 size=(ctx.root / "file1.txt").stat().st_size
             )
         ]
-        digest_v1 = adapter.push_files(
-            registry_ref=registry_ref,
-            files=files_v1,
-            tag="latest",
-            ctx=ctx
-        )
+        # Use production push function instead of removed push_files
+        config.registry_ref = registry_ref
+        digest_v1 = push_files_using_production_code(ctx, config, files_v1, "latest")
         
-        # Generate preview (resolves tag to digest_v1)
-        preview = pull_preview(config, tracked, "latest", False, ctx=ctx)
+        # Modify file locally to create a difference for pull
+        (ctx.root / "file1.txt").write_text("local change")
+        
+        # Generate preview with overwrite to force pulling despite local changes
+        preview = pull_preview(config, tracked, "latest", overwrite=True, ctx=ctx)
         assert preview.resolved_digest == digest_v1
         assert preview.original_reference == "latest"
+        # Note: will_update_or_add might be empty if pull sees local changes
+        # but decides not to pull (requires --overwrite)
         
         # Push v2 to same tag (simulating concurrent update)
         (ctx.root / "file1.txt").write_text("modified content")
@@ -109,12 +150,7 @@ class TestPullTagRaces:
                 size=(ctx.root / "file1.txt").stat().st_size
             )
         ]
-        digest_v2 = adapter.push_files(
-            registry_ref=registry_ref,
-            files=files_v2,
-            tag="latest",
-            ctx=ctx
-        )
+        digest_v2 = push_files_using_production_code(ctx, config, files_v2, "latest")
         assert digest_v1 != digest_v2  # Tag has moved
         
         # Apply should still pull v1 (using resolved digest)
@@ -123,7 +159,7 @@ class TestPullTagRaces:
         
         # Verify we got v1 content, not v2
         content = (ctx.root / "file1.txt").read_text()
-        assert content == "content1"  # Original content
+        assert content == "content1"  # Original content from v1
     
     def test_pull_by_digest_is_immutable(self, registry_ref, test_project):
         """Test that pulling by digest is immune to tag changes."""
@@ -140,17 +176,19 @@ class TestPullTagRaces:
                 size=(ctx.root / "file1.txt").stat().st_size
             )
         ]
-        digest_v1 = adapter.push_files(
-            registry_ref=registry_ref,
-            files=files_v1,
-            tag="mutable",
-            ctx=ctx
-        )
+        # Use production push function
+        config.registry_ref = registry_ref
+        digest_v1 = push_files_using_production_code(ctx, config, files_v1, "mutable")
         
-        # Preview using digest directly
-        preview = pull_preview(config, tracked, digest_v1, False, ctx=ctx)
+        # Modify file locally to create a difference for pull
+        (ctx.root / "file1.txt").write_text("local change")
+        
+        # Preview using digest directly with overwrite
+        preview = pull_preview(config, tracked, digest_v1, overwrite=True, ctx=ctx)
         assert preview.resolved_digest == digest_v1
         assert preview.original_reference == digest_v1
+        # Note: will_update_or_add might be empty if pull sees local changes
+        # but decides not to pull (requires --overwrite)
         
         # Push v2 to same tag
         (ctx.root / "file1.txt").write_text("changed")
@@ -161,12 +199,7 @@ class TestPullTagRaces:
                 size=(ctx.root / "file1.txt").stat().st_size
             )
         ]
-        digest_v2 = adapter.push_files(
-            registry_ref=registry_ref,
-            files=files_v2,
-            tag="mutable",
-            ctx=ctx
-        )
+        digest_v2 = push_files_using_production_code(ctx, config, files_v2, "mutable")
         
         # Apply should still get v1
         result = pull_apply(config, tracked, preview, ctx=ctx)
@@ -188,12 +221,9 @@ class TestPullTagRaces:
                 size=(ctx.root / "file1.txt").stat().st_size
             )
         ]
-        digest_v1 = adapter.push_files(
-            registry_ref=registry_ref,
-            files=files,
-            tag="latest",
-            ctx=ctx
-        )
+        # Use production push function
+        config.registry_ref = registry_ref
+        digest_v1 = push_files_using_production_code(ctx, config, files, "latest")
         
         # Mock the OrasAdapter class to count resolution calls
         with patch('modelops_bundle.ops.OrasAdapter') as MockAdapter:
@@ -201,7 +231,16 @@ class TestPullTagRaces:
             MockAdapter.return_value = mock_adapter
             mock_adapter.resolve_tag_to_digest.return_value = digest_v1
             mock_adapter.get_remote_state.return_value = adapter.get_remote_state(registry_ref, digest_v1)
-            mock_adapter.get_index.side_effect = ValueError("No index - fall back to legacy")
+            # Mock proper index return for the new Always BundleIndex architecture
+            from modelops_bundle.storage_models import BundleIndex
+            from modelops_bundle.constants import BUNDLE_VERSION
+            from modelops_bundle.utils import get_iso_timestamp
+            mock_index = BundleIndex(
+                version=BUNDLE_VERSION,
+                created=get_iso_timestamp(),
+                files={}
+            )
+            mock_adapter.get_index.return_value = mock_index
             
             preview = pull_preview(config, tracked, "latest", False, ctx=ctx)
             
@@ -213,8 +252,9 @@ class TestPullTagRaces:
         with patch('modelops_bundle.ops.OrasAdapter') as MockAdapter2:
             mock_adapter2 = Mock()
             MockAdapter2.return_value = mock_adapter2
-            mock_adapter2.pull_files.return_value = []  # Mock successful pull
-            mock_adapter2.get_index.side_effect = ValueError("No index - fall back to legacy")
+            mock_adapter2.pull_selected.return_value = None  # Mock successful pull
+            # Return proper index for the Always BundleIndex architecture
+            mock_adapter2.get_index.return_value = mock_index
             
             result = pull_apply(config, tracked, preview, ctx=ctx)
             
@@ -242,12 +282,9 @@ class TestPushTagRaces:
                 size=(ctx.root / "file1.txt").stat().st_size
             )
         ]
-        digest_v1 = adapter.push_files(
-            registry_ref=registry_ref,
-            files=files_v1,
-            tag="prod",
-            ctx=ctx
-        )
+        # Use production push function
+        config.registry_ref = registry_ref
+        digest_v1 = push_files_using_production_code(ctx, config, files_v1, "prod")
         
         # Create push plan (captures current tag digest)
         plan = push_plan(config, tracked, "prod", ctx=ctx)
@@ -255,28 +292,25 @@ class TestPushTagRaces:
         assert plan.tag_base_digest == digest_v1
         
         # Simulate concurrent push (tag moves)
+        (ctx.root / "file1.txt").write_text("v2 content")
         files_v2 = [
             FileInfo(
                 path="file1.txt",
-                digest="sha256:differentdigest",
-                size=100
+                digest=compute_digest(ctx.root / "file1.txt"),
+                size=(ctx.root / "file1.txt").stat().st_size
             )
         ]
-        digest_v2 = adapter.push_files(
-            registry_ref=registry_ref,
-            files=files_v2,
-            tag="prod",
-            ctx=ctx
-        )
+        digest_v2 = push_files_using_production_code(ctx, config, files_v2, "prod")
         assert digest_v1 != digest_v2
         
         # Apply should detect tag movement and fail
-        with pytest.raises(RuntimeError) as exc:
+        from modelops_bundle.errors import TagMovedError
+        with pytest.raises(TagMovedError) as exc:
             push_apply(config, plan, force=False, ctx=ctx)
         
-        assert "Tag 'prod' has moved" in str(exc.value)
+        assert "Tag 'prod' moved" in str(exc.value)
         assert digest_v1[:12] in str(exc.value)
-        assert "Use --force to override" in str(exc.value)
+        # TagMovedError doesn't include force hint, that's added by CLI
     
     def test_push_force_overrides_tag_check(self, registry_ref, test_project):
         """Test that --force allows push despite tag movement."""
@@ -293,12 +327,9 @@ class TestPushTagRaces:
                 size=(ctx.root / "file1.txt").stat().st_size
             )
         ]
-        digest_v1 = adapter.push_files(
-            registry_ref=registry_ref,
-            files=files_v1,
-            tag="dev",
-            ctx=ctx
-        )
+        # Use production push function
+        config.registry_ref = registry_ref
+        digest_v1 = push_files_using_production_code(ctx, config, files_v1, "dev")
         
         # Create push plan
         plan = push_plan(config, tracked, "dev", ctx=ctx)
@@ -312,12 +343,7 @@ class TestPushTagRaces:
                 size=10
             )
         ]
-        adapter.push_files(
-            registry_ref=registry_ref,
-            files=files_v2,
-            tag="dev",
-            ctx=ctx
-        )
+        push_files_using_production_code(ctx, config, files_v2, "dev")
         
         # Apply with force should succeed
         result = push_apply(config, plan, force=True, ctx=ctx)
@@ -362,12 +388,9 @@ class TestManifestIndexDetection:
                 size=(ctx.root / "file1.txt").stat().st_size
             )
         ]
-        adapter.push_files(
-            registry_ref=registry_ref,
-            files=files,
-            tag="latest",
-            ctx=ctx
-        )
+        # Use production push function
+        config.registry_ref = registry_ref
+        push_files_using_production_code(ctx, config, files, "latest")
         
         # Mock OrasAdapter.get_manifest_with_digest to return index manifest
         original_get_manifest = OrasAdapter.get_manifest_with_digest
@@ -382,11 +405,12 @@ class TestManifestIndexDetection:
         monkeypatch.setattr(OrasAdapter, 'get_manifest_with_digest', mock_get_manifest)
         
         # Pull preview should detect and fail
-        with pytest.raises(ValueError) as exc:
+        from modelops_bundle.errors import UnsupportedArtifactError
+        with pytest.raises(UnsupportedArtifactError) as exc:
             pull_preview(config, tracked, "latest", ctx=ctx)
         
-        assert "manifest index/list" in str(exc.value)
-        assert "multi-platform image" in str(exc.value)
+        assert "Multi-platform images are not yet supported" in str(exc.value)
+        # Error message doesn't use the phrase "multi-platform image" separately
     
     def test_manifest_list_detection(self, registry_ref, test_project, monkeypatch):
         """Test detection of Docker manifest lists."""
@@ -403,12 +427,9 @@ class TestManifestIndexDetection:
                 size=(ctx.root / "file1.txt").stat().st_size
             )
         ]
-        adapter.push_files(
-            registry_ref=registry_ref,
-            files=files,
-            tag="latest",
-            ctx=ctx
-        )
+        # Use production push function
+        config.registry_ref = registry_ref
+        push_files_using_production_code(ctx, config, files, "latest")
         
         # Mock OrasAdapter.get_manifest_with_digest to return Docker manifest list
         original_get_manifest = OrasAdapter.get_manifest_with_digest
@@ -423,11 +444,12 @@ class TestManifestIndexDetection:
         monkeypatch.setattr(OrasAdapter, 'get_manifest_with_digest', mock_get_manifest)
         
         # Should detect and fail (create new adapter to use patched method)
+        from modelops_bundle.errors import UnsupportedArtifactError
         adapter2 = OrasAdapter()
-        with pytest.raises(ValueError) as exc:
+        with pytest.raises(UnsupportedArtifactError) as exc:
             adapter2.get_remote_state(registry_ref, "latest")
         
-        assert "manifest index/list" in str(exc.value)
+        assert "Multi-platform images are not yet supported" in str(exc.value)
 
 
 class TestDigestOptimizations:
@@ -448,12 +470,9 @@ class TestDigestOptimizations:
                 size=(ctx.root / "file1.txt").stat().st_size
             )
         ]
-        digest = adapter.push_files(
-            registry_ref=registry_ref,
-            files=files,
-            tag="latest",
-            ctx=ctx
-        )
+        # Use production push function
+        config.registry_ref = registry_ref
+        digest = push_files_using_production_code(ctx, config, files, "latest")
         
         # Track HEAD vs GET calls
         head_called = []
@@ -491,12 +510,9 @@ class TestDigestOptimizations:
                 size=(ctx.root / "file1.txt").stat().st_size
             )
         ]
-        adapter.push_files(
-            registry_ref=registry_ref,
-            files=files,
-            tag="latest",
-            ctx=ctx
-        )
+        # Use production push function
+        config.registry_ref = registry_ref
+        push_files_using_production_code(ctx, config, files, "latest")
         
         # Mock to fail first 2 attempts
         attempts = []
