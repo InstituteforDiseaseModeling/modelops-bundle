@@ -571,21 +571,6 @@ def _push_apply_with_index(
         manifest_annotations=None
     )
     
-    # Update sync state with ALL files from index
-    state = load_state(ctx)
-    
-    # Create tracked snapshot from ALL files in index
-    all_files_snapshot = {
-        path: entry.digest 
-        for path, entry in index.files.items()
-    }
-    
-    # Update state with the complete file list
-    state.last_push_digest = manifest_digest
-    state.last_synced_files = all_files_snapshot
-    state.timestamp = time.time()
-    
-    save_state(state, ctx)
-    
+    # State is updated in push_apply, not here (keep this function pure transport)
     return manifest_digest
 

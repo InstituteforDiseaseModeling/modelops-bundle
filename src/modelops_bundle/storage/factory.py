@@ -38,14 +38,14 @@ def make_blob_store(policy: StoragePolicy) -> Optional[BlobStore]:
         policy: Storage policy configuration
         
     Returns:
-        BlobStore instance or None for oci-inline mode or no provider
+        BlobStore instance or None for oci-only mode or no provider
         
     Raises:
         ValueError: If configuration is invalid
         NotImplementedError: If provider is not supported
     """
-    # No blob store needed for OCI-only modes
-    if policy.mode == "oci-inline" or not policy.provider:
+    # No blob store needed for OCI-only mode or when no provider configured
+    if policy.mode == "oci-only" or not policy.provider:
         return None
     
     if policy.provider == "azure":

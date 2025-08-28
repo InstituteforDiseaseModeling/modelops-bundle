@@ -138,12 +138,9 @@ def format_storage_display(storage_type, config=None, entry=None, direction=None
                 if len(parts) > 2:
                     display = f"blob/gcs:{parts[2]}"
             elif uri.startswith("fs://"):
-                # Extract path from fs://path
-                path = uri[5:]  # Remove fs://
-                if path:
-                    display = f"blob/fs:{path.split('/')[0]}"
-                else:
-                    display = "blob/fs"
+                # For filesystem URIs, just show "blob/fs" for consistency
+                # (fs:// URIs often have absolute paths like fs:///abs/path)
+                display = "blob/fs"
             elif uri.startswith("file://"):
                 # Extract path from file:///path
                 path = uri[7:]  # Remove file://

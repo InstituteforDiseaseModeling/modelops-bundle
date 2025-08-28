@@ -25,6 +25,7 @@ from .ops import (
 from .oras import OrasAdapter
 from .working_state import TrackedWorkingState
 from .core import RemoteStatus, RemoteState
+from .errors import MissingIndexError, NetworkError, AuthError, NotFoundError, UnsupportedArtifactError
 
 
 app = typer.Typer(help="ModelOps-Bundle - OCI artifact-based model bundle synchronization")
@@ -71,31 +72,20 @@ def get_remote_state_with_status(
 ) -> Tuple[Optional["RemoteState"], "RemoteStatus"]:
     """Get remote state and status, handling all error cases cleanly."""
     from .core import RemoteStatus
-    import requests
     
     try:
         remote_state = oras.get_remote_state(registry_ref, reference)
         return remote_state, RemoteStatus.AVAILABLE
-    except requests.exceptions.ConnectionError:
+    except NotFoundError:
+        return None, RemoteStatus.EMPTY
+    except AuthError:
+        return None, RemoteStatus.AUTH_FAILED
+    except NetworkError:
         return None, RemoteStatus.UNREACHABLE
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 404:
-            return None, RemoteStatus.EMPTY
-        elif e.response.status_code in (401, 403):
-            return None, RemoteStatus.AUTH_FAILED
-        else:
-            return None, RemoteStatus.UNKNOWN_ERROR
-    except Exception as e:
-        # Check for specific error patterns in the exception message
-        error_str = str(e).lower()
-        if "404" in error_str or "not found" in error_str:
-            return None, RemoteStatus.EMPTY
-        elif "401" in error_str or "403" in error_str or "auth" in error_str:
-            return None, RemoteStatus.AUTH_FAILED
-        elif "connection" in error_str or "network" in error_str:
-            return None, RemoteStatus.UNREACHABLE
-        else:
-            return None, RemoteStatus.UNKNOWN_ERROR
+    except UnsupportedArtifactError:
+        return None, RemoteStatus.UNKNOWN_ERROR
+    except Exception:
+        return None, RemoteStatus.UNKNOWN_ERROR
 
 
 def require_remote(
@@ -135,7 +125,7 @@ def init(
     storage_container: Optional[str] = typer.Option(None, "--storage-container", help="Container/bucket name or filesystem path"),
     storage_prefix: Optional[str] = typer.Option(None, "--storage-prefix", help="Optional key prefix for organization"),
     storage_threshold: Optional[int] = typer.Option(None, "--storage-threshold", help="Size threshold in MB (default: 50)"),
-    storage_mode: Optional[str] = typer.Option(None, "--storage-mode", help="Storage mode (auto, oci-inline, blob-only)"),
+    storage_mode: Optional[str] = typer.Option(None, "--storage-mode", help="Storage mode (auto, oci-only, blob-only)"),
     storage_preset: Optional[str] = typer.Option(None, "--storage-preset", help="Preset configuration (azurite, local)"),
 ):
     """Initialize a new bundle in the current directory."""
@@ -805,17 +795,18 @@ def manifest(
     
     # If a specific reference is provided, show its details
     if reference:
-        # Get remote state (require it to exist)
-        remote = require_remote(adapter, config.registry_ref, reference)
-        
-        # Resolve to digest for consistency
-        resolved_digest = adapter.resolve_tag_to_digest(config.registry_ref, reference)
-        manifest = adapter.get_manifest(config.registry_ref, resolved_digest)
-        
-        # Get storage info from index if available
-        storage_info = {}
+        # First resolve to digest and fetch manifest (doesn't require index)
         try:
-            from .storage_models import StorageType
+            resolved_digest = adapter.resolve_tag_to_digest(config.registry_ref, reference)
+            manifest = adapter.get_manifest(config.registry_ref, resolved_digest)
+        except Exception as e:
+            console.print(f"[red]✗[/red] Failed to fetch manifest: {e}")
+            raise typer.Exit(1)
+        
+        # Try to get storage info from index if available
+        storage_info = {}
+        remote = None
+        try:
             index = adapter.get_index(config.registry_ref, resolved_digest)
             # Build remote state from index
             from .ops import _index_to_remote_state
@@ -828,8 +819,8 @@ def manifest(
                     entry=entry
                 )
         except MissingIndexError:
-            # No index available - older bundle format
-            pass
+            # No index available - show manifest without storage info
+            remote = RemoteState(manifest_digest=resolved_digest, files={})
         
         # Display manifest info
         console.print(f"\n[bold]Manifest for {config.registry_ref}:{reference}[/bold]")
