@@ -26,6 +26,7 @@ from .storage import make_blob_store
 from .storage_models import BundleIndex, BundleFileEntry, StorageType
 from .utils import compute_digest, get_iso_timestamp
 from .working_state import TrackedWorkingState
+from .service_types import EnsureLocalResult
 
 
 # ============= Atomic Write Helpers =============
@@ -615,4 +616,120 @@ def _push_apply_with_index(
     
     # State is updated in push_apply, not here (keep this function pure transport)
     return manifest_digest
+
+
+# ============= Standalone Operations =============
+
+def ensure_local(
+    config: BundleConfig,
+    *,
+    ref: Optional[str],
+    dest: Path,
+    mirror: bool = False,
+    dry_run: bool = False,
+    ctx: Optional[ProjectContext] = None,
+) -> EnsureLocalResult:
+    """
+    Pin a tag/digest to a manifest and materialize all files at 'dest'.
+    
+    - Always overwrites files in 'dest' with the bundle contents.
+    - If 'mirror' is True, also deletes extra files in 'dest' that aren't in the bundle.
+    - Does NOT modify tracked/state.
+    
+    Args:
+        config: Bundle configuration
+        ref: Tag or sha256:<manifest> reference
+        dest: Destination directory to materialize the bundle
+        mirror: If True, delete files in dest that aren't in bundle
+        dry_run: If True, preview without making changes
+        ctx: Optional project context
+        
+    Returns:
+        EnsureLocalResult with operation details
+    """
+    if ctx is None:
+        ctx = ProjectContext()
+
+    adapter = OrasAdapter()
+    
+    # Resolve ref -> digest (accept either tag or sha256:...)
+    if not ref:
+        ref = config.default_tag
+    resolved_digest = ref if ref.startswith("sha256:") else adapter.resolve_tag_to_digest(config.registry_ref, ref)
+
+    # Read the authoritative index (required by our artifact format)
+    index = adapter.get_index(config.registry_ref, resolved_digest)
+    entries = list(index.files.values())
+    total_bytes = sum(e.size for e in entries)
+
+    # Blob store (if needed)
+    blob_store = None
+    if any(e.storage == StorageType.BLOB for e in entries):
+        blob_store = make_blob_store(config.storage)  # will raise if not configured
+
+    dest = Path(dest).resolve()
+    
+    if dry_run:
+        extra = _scan_extras(dest, set(index.files.keys())) if mirror else []
+        return EnsureLocalResult(
+            resolved_digest=resolved_digest,
+            downloaded=len(entries),
+            deleted=len(extra) if mirror else 0,
+            bytes_downloaded=total_bytes,
+            dry_run=True
+        )
+
+    # Ensure destination exists
+    dest.mkdir(parents=True, exist_ok=True)
+
+    # Download all bundle files to dest (atomic + digest-verified inside adapter)
+    adapter.pull_selected(
+        registry_ref=config.registry_ref,
+        digest=resolved_digest,
+        entries=entries,
+        output_dir=dest,
+        blob_store=blob_store,
+    )
+
+    deleted = 0
+    if mirror:
+        extras = _scan_extras(dest, set(index.files.keys()))
+        for rel in extras:
+            target = (dest / rel).resolve()
+            # only delete regular files we own (don't rm dirs here; optional)
+            if target.is_file():
+                try:
+                    target.unlink()
+                    deleted += 1
+                except OSError:
+                    pass
+
+    return EnsureLocalResult(
+        resolved_digest=resolved_digest,
+        downloaded=len(entries),
+        deleted=deleted,
+        bytes_downloaded=total_bytes,
+        dry_run=False
+    )
+
+
+def _scan_extras(dest: Path, expected_rel_paths: set[str]) -> List[str]:
+    """
+    Return a list of project-relative paths present under 'dest'
+    that are NOT in 'expected_rel_paths'. Only files are considered.
+    """
+    import os
+    extras: List[str] = []
+    root = Path(dest)
+    if not root.exists():
+        return extras
+    for dirpath, _, filenames in os.walk(root):
+        d = Path(dirpath)
+        rel_dir = d.relative_to(root).as_posix()
+        for name in filenames:
+            rel = f"{rel_dir}/{name}" if rel_dir != "." else name
+            # Match BundleIndex's POSIX-style relative keys
+            if rel not in expected_rel_paths:
+                extras.append(rel)
+    return extras
 

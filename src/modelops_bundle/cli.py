@@ -1026,6 +1026,39 @@ def diff(
         console.print()
 
 
+@app.command()
+def ensure(
+    ref: Optional[str] = typer.Option(None, "--ref", help="Tag or sha256:<manifest>"),
+    dest: Path = typer.Option(..., "--dest", help="Destination directory to materialize the bundle"),
+    mirror: bool = typer.Option(False, "--mirror", help="Prune files in dest that aren't in the bundle"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview what would happen"),
+):
+    """Materialize a bundle into a destination directory (for cloud workstations, etc.)."""
+    ctx = require_project_context()
+    try:
+        config = load_config(ctx)
+    except FileNotFoundError:
+        console.print("[red]✗[/red] Bundle not properly initialized")
+        raise typer.Exit(1)
+
+    try:
+        from .ops import ensure_local
+        result = ensure_local(config, ref=ref, dest=dest, mirror=mirror, dry_run=dry_run, ctx=ctx)
+    except Exception as e:
+        console.print(f"[red]✗[/red] ensure failed: {e}")
+        raise typer.Exit(1)
+
+    # minimal, consistent output
+    mode = "mirror" if mirror else "update-only"
+    console.print(f"[bold]Ensure ({mode})[/bold]")
+    console.print(f"Resolved: [cyan]{result.resolved_digest[:16]}...[/cyan]")
+    console.print(f"Download: {result.downloaded} files ({humanize_size(result.bytes_downloaded)})")
+    if mirror:
+        console.print(f"Pruned:   {result.deleted} extra files")
+    if dry_run:
+        console.print("[dim]Dry run - no changes made[/dim]")
+
+
 def main():
     """Entry point for CLI."""
     app()
