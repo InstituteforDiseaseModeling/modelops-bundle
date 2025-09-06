@@ -34,9 +34,22 @@ from .service_types import EnsureLocalResult
 def _atomic_write_text(path: Path, text: str) -> None:
     """Atomically write text to file with crash safety.
     
+    This function ensures atomic writes with proper durability guarantees:
+    1. Writes to temp file with fsync to ensure content is on disk
+    2. Atomic rename to target path (appears all-at-once)
+    3. Fsync parent directory to ensure rename is durable
+    
+    Platform compatibility:
+    - Directory fsync is best-effort on Windows (not supported)
+    - Uses O_DIRECTORY flag only on Linux (not portable)
+    
     Args:
         path: Target file path
         text: Text content to write
+
+    ## Developer Notes
+    We use our own tiny function to avoid a dependency, and a standard package
+    to do this was marked as read-only in 2022: https://github.com/untitaker/python-atomicwrites
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     
@@ -57,12 +70,22 @@ def _atomic_write_text(path: Path, text: str) -> None:
         # Atomic rename
         os.replace(tmp, path)
         
-        # Fsync directory to ensure rename is durable
-        dirfd = os.open(str(path.parent), os.O_DIRECTORY)
+        # Fsync directory to ensure rename is durable (best-effort on Windows)
         try:
-            os.fsync(dirfd)
-        finally:
-            os.close(dirfd)
+            # Use O_DIRECTORY flag if available (Linux)
+            flags = os.O_RDONLY
+            if hasattr(os, "O_DIRECTORY"):
+                flags |= os.O_DIRECTORY
+            
+            dirfd = os.open(str(path.parent), flags)
+            try:
+                os.fsync(dirfd)
+            finally:
+                os.close(dirfd)
+        except (OSError, IOError):
+            # Expected on Windows or filesystems that don't support directory fsync
+            # The file write is still atomic and durable (via file fsync above)
+            pass
     except:
         # Clean up temp file on any error
         tmp.unlink(missing_ok=True)
@@ -432,12 +455,22 @@ def pull_apply(
     
     # Pull selected files (with built-in verification)
     if entries_to_pull:
+        # Use LocalCAS if configured
+        cas = None
+        link_mode = "auto"
+        if hasattr(config, 'cache_dir') and config.cache_dir:
+            from .local_cache import LocalCAS
+            cas = LocalCAS(root=Path(config.cache_dir))
+            link_mode = getattr(config, 'cache_link_mode', 'auto')
+        
         adapter.pull_selected(
             registry_ref=config.registry_ref,
             digest=preview.resolved_digest,
             entries=entries_to_pull,
             output_dir=ctx.root,
-            blob_store=blob_store
+            blob_store=blob_store,
+            cas=cas,
+            link_mode=link_mode,
         )
         # Note: pull_selected now includes digest verification
     
@@ -683,12 +716,22 @@ def ensure_local(
     dest.mkdir(parents=True, exist_ok=True)
 
     # Download all bundle files to dest (atomic + digest-verified inside adapter)
+    # Use LocalCAS if configured
+    cas = None
+    link_mode = "auto"
+    if hasattr(config, 'cache_dir') and config.cache_dir:
+        from .local_cache import LocalCAS
+        cas = LocalCAS(root=Path(config.cache_dir))
+        link_mode = getattr(config, 'cache_link_mode', 'auto')
+    
     adapter.pull_selected(
         registry_ref=config.registry_ref,
         digest=resolved_digest,
         entries=entries,
         output_dir=dest,
         blob_store=blob_store,
+        cas=cas,
+        link_mode=link_mode,
     )
 
     deleted = 0

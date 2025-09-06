@@ -65,7 +65,7 @@ class BaseMockAdapter:
         
         return index
     
-    def pull_selected(self, registry_ref, digest, entries, output_dir, blob_store=None):
+    def pull_selected(self, registry_ref, digest, entries, output_dir, blob_store=None, cas=None, link_mode="auto"):
         """Mock implementation of pull_selected."""
         # Write files based on the entries
         for entry in entries:
@@ -449,7 +449,7 @@ class TestPullSafetyGuards:
                 super().__init__(remote)
             def get_remote_state(self, ref, tag):
                 return remote
-            def pull_selected(self, registry_ref, digest, entries, output_dir, blob_store=None):
+            def pull_selected(self, registry_ref, digest, entries, output_dir, blob_store=None, cas=None, link_mode="auto"):
                 pull_called.append(True)
                 # Simulate pulling remote files based on entries
                 for entry in entries:

@@ -496,12 +496,14 @@ class OrasAdapter:
         entries: List[BundleFileEntry],
         output_dir: Path,
         blob_store=None,  # Optional[BlobStore]
+        cas=None,  # Optional[LocalCAS]
+        link_mode: str = "auto",
     ) -> None:
         """
         Pull selected files to output directory with digest verification.
         
         Uses atomic downloads and path safety checks to ensure reliability
-        and security.
+        and security. Can optionally use LocalCAS to avoid re-downloads.
         
         Args:
             registry_ref: Registry reference
@@ -509,6 +511,8 @@ class OrasAdapter:
             entries: List of BundleFileEntry to pull
             output_dir: Output directory
             blob_store: BlobStore instance (required if any BLOB entries)
+            cas: Optional LocalCAS instance for caching
+            link_mode: Materialization mode when using CAS ("auto", "reflink", "hardlink", "copy")
             
         Raises:
             DigestMismatchError: If any file fails digest verification
@@ -523,28 +527,45 @@ class OrasAdapter:
             # Validate path safety before any filesystem operations
             dst = _safe_target(output_dir, entry.path)
             
-            # Define download functions for atomic operation
-            if entry.storage == StorageType.OCI:
-                # OCI download function
-                def download_oci(tmppath):
-                    # download_blob expects a file path string
-                    self.client.download_blob(container, entry.digest, tmppath)
+            if cas:
+                # Use LocalCAS for caching
+                def fetch_to_path(tmppath: str) -> None:
+                    """Fetch function for LocalCAS.ensure_present."""
+                    if entry.storage == StorageType.OCI:
+                        self.client.download_blob(container, entry.digest, tmppath)
+                    else:
+                        if not entry.blobRef or not blob_store:
+                            raise BlobProviderMissingError()
+                        blob_store.get(entry.blobRef, Path(tmppath))
                 
-                _atomic_download(download_oci, dst)
+                # Ensure in cache and materialize to destination
+                cas.ensure_present(entry.digest, fetch_to_path)
+                cas.materialize(entry.digest, dst, mode=link_mode)
+                
             else:
-                # Blob storage download function
-                if not entry.blobRef or not blob_store:
-                    raise BlobProviderMissingError()
+                # Direct download without caching
+                # Define download functions for atomic operation
+                if entry.storage == StorageType.OCI:
+                    # OCI download function
+                    def download_oci(tmppath):
+                        # download_blob expects a file path string
+                        self.client.download_blob(container, entry.digest, tmppath)
+                    
+                    _atomic_download(download_oci, dst)
+                else:
+                    # Blob storage download function
+                    if not entry.blobRef or not blob_store:
+                        raise BlobProviderMissingError()
+                    
+                    def download_blob(tmppath):
+                        # blob_store.get expects a Path
+                        blob_store.get(entry.blobRef, Path(tmppath))
+                    
+                    _atomic_download(download_blob, dst)
                 
-                def download_blob(tmppath):
-                    # blob_store.get expects a Path
-                    blob_store.get(entry.blobRef, Path(tmppath))
-                
-                _atomic_download(download_blob, dst)
-            
-            # Verify digest AFTER atomic replace (on the file user now sees)
-            actual_digest = compute_digest(dst)
-            if actual_digest != entry.digest:
-                dst.unlink(missing_ok=True)  # Remove corrupted file
-                raise DigestMismatchError(entry.path, entry.digest, actual_digest)
+                # Verify digest AFTER atomic replace (on the file user now sees)
+                actual_digest = compute_digest(dst)
+                if actual_digest != entry.digest:
+                    dst.unlink(missing_ok=True)  # Remove corrupted file
+                    raise DigestMismatchError(entry.path, entry.digest, actual_digest)
 

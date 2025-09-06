@@ -34,7 +34,7 @@ class MockOrasAdapter:
         )
         return index
     
-    def pull_selected(self, registry_ref, digest, entries, output_dir, blob_store=None):
+    def pull_selected(self, registry_ref, digest, entries, output_dir, blob_store=None, cas=None, link_mode="auto"):
         """Mock file pulling."""
         self.pull_selected_called = True
         self.pull_selected_entries = entries

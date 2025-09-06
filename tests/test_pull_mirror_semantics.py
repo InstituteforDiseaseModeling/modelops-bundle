@@ -63,7 +63,7 @@ class BaseMockAdapter:
         
         return index
     
-    def pull_selected(self, registry_ref, digest, entries, output_dir, blob_store=None):
+    def pull_selected(self, registry_ref, digest, entries, output_dir, blob_store=None, cas=None, link_mode="auto"):
         """Mock implementation of pull_selected."""
         # Write files based on the entries
         for entry in entries:
@@ -162,12 +162,12 @@ class TestPullMirrorSemantics:
             def get_remote_state(self, ref, tag):
                 return remote
             
-            def pull_selected(self, registry_ref, digest, entries, output_dir, blob_store=None):
+            def pull_selected(self, registry_ref, digest, entries, output_dir, blob_store=None, cas=None, link_mode="auto"):
                 # Override to track what gets pulled
                 for entry in entries:
                     self.pulled_files.append(entry.path)
                 # Call parent implementation
-                super().pull_selected(registry_ref, digest, entries, output_dir, blob_store)
+                super().pull_selected(registry_ref, digest, entries, output_dir, blob_store, cas, link_mode)
         
         import modelops_bundle.ops
         original_adapter = modelops_bundle.ops.OrasAdapter
@@ -265,7 +265,7 @@ class TestPullMirrorSemantics:
             def get_remote_state(self, ref, tag):
                 return remote
             
-            def pull_selected(self, registry_ref, digest, entries, output_dir, blob_store=None):
+            def pull_selected(self, registry_ref, digest, entries, output_dir, blob_store=None, cas=None, link_mode="auto"):
                 # New optimized behavior: only pull requested entries
                 for entry in entries:
                     files_pulled.add(entry.path)

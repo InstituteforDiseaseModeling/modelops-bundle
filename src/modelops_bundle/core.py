@@ -28,11 +28,21 @@ if TYPE_CHECKING:
 # ============= Configuration =============
 
 class BundleConfig(BaseModel):
-    """Bundle configuration (stored in .modelops-bundle/config.yaml)."""
+    """Bundle configuration (stored in .modelops-bundle/config.yaml).
+    
+    Attributes:
+        registry_ref: Registry reference (e.g. localhost:5555/epi_model)
+        default_tag: Default tag to use for push/pull operations
+        storage: Storage policy for classifying files
+        cache_dir: Optional directory for LocalCAS cache (enables deduplication)
+        cache_link_mode: Materialization strategy ("auto", "reflink", "hardlink", "copy")
+    """
     
     registry_ref: str  # e.g. localhost:5555/epi_model
     default_tag: str = "latest"
     storage: StoragePolicy = Field(default_factory=StoragePolicy)  # Default: auto mode
+    cache_dir: Optional[str] = None  # Path to LocalCAS cache directory
+    cache_link_mode: str = "auto"  # Materialization strategy
     # TODO: Add artifact_type when oras-py supports setting it in manifests
 
 
