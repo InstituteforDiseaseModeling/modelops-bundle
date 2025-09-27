@@ -130,11 +130,11 @@ class OrasAdapter:
         
         Args:
             insecure: Whether to skip TLS verification. If None, reads from
-                     MODELOPS_BUNDLE_INSECURE env var (default: True)
+                     MODELOPS_BUNDLE_INSECURE env var (default: False)
         """
         if insecure is None:
-            # Check environment variable, default to True for backward compatibility
-            insecure = os.environ.get("MODELOPS_BUNDLE_INSECURE", "1") != "0"
+            # Check environment variable, default to False for HTTPS (cloud registries)
+            insecure = os.environ.get("MODELOPS_BUNDLE_INSECURE", "0") != "0"
         self.client = Registry(insecure=insecure)
     
     def _build_target(self, registry_ref: str, reference: str) -> str:
