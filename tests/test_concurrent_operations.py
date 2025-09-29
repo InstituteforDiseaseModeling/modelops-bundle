@@ -299,7 +299,7 @@ class TestRaceProtectionIntegration:
         # This test requires a real registry
         from modelops_bundle.oras import OrasAdapter
         
-        registry_ref = f"{os.environ.get('REGISTRY_URL', 'localhost:5555')}/test_race_{os.urandom(4).hex()}"
+        registry_ref = f"localhost:5555/test_race_{os.urandom(4).hex()}"
         config.registry_ref = registry_ref
         
         adapter = OrasAdapter()

@@ -15,7 +15,7 @@ def can_connect_to_registry(host_port: str = None) -> bool:
         True if connection successful, False otherwise
     """
     if host_port is None:
-        host_port = os.environ.get("REGISTRY_URL", "localhost:5555")
+        host_port = "localhost:5555"
     
     try:
         host, port = host_port.split(":")
@@ -38,4 +38,4 @@ def skip_if_no_registry(registry_url: str = None):
     Use as first line in integration tests that need a registry.
     """
     if not can_connect_to_registry(registry_url):
-        pytest.skip(f"Registry not available at {registry_url or os.environ.get('REGISTRY_URL', 'localhost:5555')}")
+        pytest.skip(f"Registry not available at {registry_url or 'localhost:5555'}")

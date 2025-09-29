@@ -455,7 +455,7 @@ class BundleService:
 
 def initialize_bundle(
     project_name: str,
-    env_name: str = "local",
+    env_name: str = "dev",
     tag: str = "latest",
     threshold_mb: int = 50,
 ) -> BundleConfig:
@@ -468,7 +468,7 @@ def initialize_bundle(
         threshold_mb: Size threshold in MB for blob storage
 
     Returns:
-        BundleConfig ready to be saved
+        BundleConfig ready to be saved (no environment field)
 
     Raises:
         ValueError: If environment doesn't exist or is invalid
@@ -518,8 +518,8 @@ def initialize_bundle(
             mode="oci-inline"  # Force all to OCI
         )
 
+    # Return config WITHOUT environment field
     return BundleConfig(
-        environment=env_name,
         registry_ref=registry_ref,
         default_tag=tag,
         storage=storage_policy

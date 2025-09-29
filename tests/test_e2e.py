@@ -326,7 +326,6 @@ def test_status_shows_modifications_when_offline(sample_project, monkeypatch):
         if env:
             run_env.update(env)
         # Use safe registry configuration
-        run_env["REGISTRY_URL"] = get_test_registry()
         run_env["MODELOPS_BUNDLE_INSECURE"] = "true"
         result = subprocess.run(
             [sys.executable, "-m", "modelops_bundle.cli"] + list(args),
@@ -338,10 +337,9 @@ def test_status_shows_modifications_when_offline(sample_project, monkeypatch):
         )
         return result
 
-    # Initialize with a fake registry that will be unreachable
-    # Override the REGISTRY_URL for this specific test
+    # Initialize with local environment (will use localhost:5555 from local.yaml)
     # Use no argument to init current directory
-    result = run_cli("init", env={"REGISTRY_URL": "fake-registry.invalid:5555"})
+    result = run_cli("init", "--env", "local")
     assert result.returncode == 0
 
     # Add files
@@ -407,7 +405,7 @@ def test_full_workflow_with_cli_commands(sample_project, registry_ref, monkeypat
         # Run the CLI module directly using the same Python interpreter as pytest
         # This ensures the module is available in the Python path
         env = os.environ.copy()
-        env["REGISTRY_URL"] = registry_ref.split('/')[0]  # Extract just the registry part
+        # No need to set REGISTRY_URL - it comes from the environment file
         env["MODELOPS_BUNDLE_INSECURE"] = "true"
         result = subprocess.run(
             [sys.executable, "-m", "modelops_bundle.cli"] + list(args),
@@ -418,9 +416,9 @@ def test_full_workflow_with_cli_commands(sample_project, registry_ref, monkeypat
         )
         return result
 
-    # Initialize in current directory - registry comes from REGISTRY_URL env var
+    # Initialize in current directory with local environment
     # Use "." to init current directory
-    result = run_cli("init")
+    result = run_cli("init", "--env", "local")
     assert result.returncode == 0
     
     # Add files

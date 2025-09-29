@@ -11,6 +11,7 @@ os.environ["MODELOPS_BUNDLE_INSECURE"] = "true"
 from modelops_bundle.context import ProjectContext
 from modelops_bundle.core import BundleConfig, TrackedFiles
 from modelops_bundle.ops import save_config, save_tracked
+from modelops_bundle.env_manager import pin_env
 
 
 @pytest.fixture
@@ -18,11 +19,14 @@ def initialized_ctx(tmp_path, monkeypatch):
     """Create an initialized project context with config."""
     monkeypatch.chdir(tmp_path)
     ctx = ProjectContext.init()
-    
-    registry_url = os.environ.get("REGISTRY_URL", "localhost:5555")
-    config = BundleConfig(environment="local", registry_ref=f"{registry_url}/test")
+
+    # Pin local environment for tests
+    pin_env(ctx.storage_dir, "local")
+
+    # Use fixed registry for tests (localhost:5555 is our test registry)
+    config = BundleConfig(registry_ref="localhost:5555/test")
     save_config(config, ctx)
-    
+
     return ctx, config
 
 

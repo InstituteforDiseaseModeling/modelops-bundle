@@ -31,15 +31,15 @@ class BundleConfig(BaseModel):
     """Bundle configuration (stored in .modelops-bundle/config.yaml).
 
     Attributes:
-        environment: Environment name used to initialize (e.g. "local", "dev")
         registry_ref: Registry reference (e.g. localhost:5555/epi_model)
         default_tag: Default tag to use for push/pull operations
         storage: Storage policy for classifying files
         cache_dir: Optional directory for LocalCAS cache (enables deduplication)
         cache_link_mode: Materialization strategy ("auto", "reflink", "hardlink", "copy")
+
+    Note: Environment is stored separately in .modelops-bundle/env file.
     """
 
-    environment: str  # e.g. "local", "dev", "staging", "prod"
     registry_ref: str  # e.g. localhost:5555/epi_model
     default_tag: str = "latest"
     storage: StoragePolicy = Field(default_factory=StoragePolicy)  # Default: auto mode

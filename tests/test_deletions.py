@@ -32,7 +32,7 @@ from tests.test_registry_utils import skip_if_no_registry
 
 
 # Skip if no registry available
-REGISTRY_AVAILABLE = os.environ.get("REGISTRY_URL", "localhost:5555")
+REGISTRY_AVAILABLE = "localhost:5555"
 
 
 @pytest.fixture

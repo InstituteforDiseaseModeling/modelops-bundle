@@ -11,6 +11,7 @@ from .context import ProjectContext
 from .core import (
     BundleConfig,
     ChangeType,
+    SyncState,
     TrackedFiles,
 )
 from .utils import humanize_size, humanize_date, format_iso_date, format_storage_display
@@ -22,16 +23,45 @@ from .ops import (
     push as ops_push,
     save_config,
     save_tracked,
+    save_state,
 )
 from .oras import OrasAdapter
 from .working_state import TrackedWorkingState
 from .core import RemoteStatus, RemoteState
 from .errors import MissingIndexError, NetworkError, AuthError, NotFoundError, UnsupportedArtifactError, TagMovedError
 from .manifest import build_manifest, load_manifest
+from .env_manager import load_env_for_command
 
 
 app = typer.Typer(help="ModelOps-Bundle - OCI artifact-based model bundle synchronization")
 console = Console()
+
+
+def _is_cloud_registry(host: str) -> bool:
+    """Check if a host is a known cloud registry.
+
+    Args:
+        host: Registry hostname
+
+    Returns:
+        True if this is a cloud registry
+    """
+    cloud_suffixes = ('.azurecr.io', '.gcr.io', 'public.ecr.aws', 'amazonaws.com')
+    docker_hub_hosts = {'registry-1.docker.io', 'index.docker.io', 'docker.io', 'registry.hub.docker.com'}
+
+    return any(host.endswith(s) for s in cloud_suffixes) or host in docker_hub_hosts
+
+
+def _is_localhostish(host: str) -> bool:
+    """Check if a host is localhost-like and safe for insecure mode.
+
+    Args:
+        host: Registry hostname
+
+    Returns:
+        True if this is a localhost-like host
+    """
+    return host in {'localhost', '127.0.0.1', '::1'} or host.endswith('.local')
 
 
 def _validate_environment_for_registry(registry_ref: str) -> None:
@@ -49,14 +79,7 @@ def _validate_environment_for_registry(registry_ref: str) -> None:
     insecure_env = os.environ.get("MODELOPS_BUNDLE_INSECURE", "false").lower()
     is_insecure = insecure_env in ("true", "1", "yes")
 
-    is_cloud_registry = (
-        '.azurecr.io' in registry_host or
-        '.gcr.io' in registry_host or
-        'public.ecr.aws' in registry_host or
-        'registry.hub.docker.com' in registry_host
-    )
-
-    if is_cloud_registry and is_insecure:
+    if _is_cloud_registry(registry_host) and is_insecure:
         console.print(f"[red]🚨 CONFIGURATION ERROR[/red]")
         console.print(f"   Insecure mode is enabled for cloud registry: [bold]{registry_host}[/bold]")
         console.print(f"   This causes HTTP (not HTTPS) connections and authentication failures.")
@@ -81,43 +104,27 @@ def _get_oras_adapter(config: BundleConfig, ctx: ProjectContext) -> OrasAdapter:
     return OrasAdapter(auth_provider=auth_provider, registry_ref=config.registry_ref)
 
 
-def require_project_context(env: Optional[str] = None, require_storage: bool = False) -> ProjectContext:
-    """Ensure project is initialized and return context with optional environment.
+def require_project_context() -> ProjectContext:
+    """Ensure project is initialized and return context.
 
-    Args:
-        env: Environment name to load (defaults to 'dev')
-        require_storage: Whether storage must be configured
+    Note: This no longer handles environment loading.
+    Use load_env_for_command() from env_manager for that.
 
     Returns:
-        ProjectContext with environment loaded if requested
+        ProjectContext for the current project
+
+    Raises:
+        typer.Exit: If not in a project directory
     """
     try:
-        ctx = ProjectContext(env=env)
-
-        # If env was specified or storage is required, validate environment
-        if env is not None or require_storage:
-            try:
-                environment = ctx.get_environment(require_storage=require_storage)
-                # Print which environment we're using
-                env_name = ctx.env_name or "dev"
-                console.print(f"[green]✓[/green] Using environment '{env_name}'")
-            except FileNotFoundError:
-                env_name = env or "dev"
-                console.print(f"[red]✗[/red] Environment '{env_name}' not found")
-                console.print("Available environments can be created with 'mops infra up'")
-                raise typer.Exit(1)
-            except ValueError as e:
-                console.print(f"[red]✗[/red] {e}")
-                raise typer.Exit(1)
-
-        return ctx
+        return ProjectContext()
     except ValueError as e:
         console.print(f"[red]✗[/red] {e}")
         console.print()
         console.print("[dim]Hint: Check you're in the right directory[/dim]")
         console.print()
         console.print("To initialize a new project, run:")
-        console.print("  [cyan]REGISTRY_URL=<registry> uv run modelops-bundle init[/cyan]")
+        console.print("  [cyan]mops-bundle init[/cyan] or [cyan]mops-bundle init --env local[/cyan]")
         raise typer.Exit(1)
 
 
@@ -200,10 +207,39 @@ def require_remote(
     raise typer.Exit(1)
 
 
+def _resolve_target_dir(path: Optional[str]) -> Tuple[Path, str, bool]:
+    """Resolve target directory and determine if templates should be created.
+
+    Returns:
+        (target_dir, project_name, should_create_templates)
+    """
+    if path:
+        # Creating new directory
+        target_dir = Path(path).resolve()
+        return target_dir, target_dir.name, True
+    else:
+        # Using current directory
+        target_dir = Path.cwd()
+        return target_dir, target_dir.name, False
+
+
+def _check_already_initialized(target_dir: Path) -> None:
+    """Check if directory is already initialized, exit if so."""
+    conflicts = []
+    if (target_dir / "pyproject.toml").exists():
+        conflicts.append("pyproject.toml")
+    if (target_dir / ".modelops-bundle").exists():
+        conflicts.append(".modelops-bundle")
+
+    if conflicts:
+        console.print(f"[red]error:[/red] Project already initialized in `{target_dir}` ({', '.join(conflicts)} exist)")
+        raise typer.Exit(1)
+
+
 @app.command()
 def init(
     path: Optional[str] = typer.Argument(None, help="Directory to initialize (default: current directory)"),
-    env: str = typer.Option("local", "--env", "-e", help="Environment to use (local, dev, staging, prod)"),
+    env: str = typer.Option("dev", "--env", "-e", help="Environment to use (default: dev)"),
     tag: str = typer.Option("latest", help="Default tag"),
     threshold_mb: int = typer.Option(50, "--threshold", help="Size threshold in MB for blob storage"),
 ):
@@ -213,62 +249,39 @@ def init(
     - Initialize the current directory (no path argument)
     - Create and initialize a new directory (with path argument)
 
-    The environment determines both registry and storage configuration,
-    loaded from ~/.modelops/bundle-env/{env}.yaml
+    The environment is pinned to .modelops-bundle/env and used for all operations.
 
     Examples:
-        # Initialize with local environment (localhost + Azurite)
+        # Initialize with default environment (dev)
+        mops-bundle init my-model
+
+        # Initialize with local environment (for testing)
         mops-bundle init my-model --env local
 
-        # Initialize with dev environment (Azure ACR + blob storage)
-        mops-bundle init my-model --env dev
-
         # Initialize current directory
-        mops-bundle init --env local
+        mops-bundle init
     """
-    import os
-    from .bundle_service import initialize_bundle
+    from .env_manager import pin_env
     from .templates import create_project_templates
+    from .bundle_service import initialize_bundle
 
-    # Determine target directory and project name
-    if path:
-        # Path provided - create new directory
-        target_dir = Path(path).resolve()
-        project_name = target_dir.name
+    # Resolve target directory
+    target_dir, project_name, create_templates = _resolve_target_dir(path)
 
-        if target_dir.exists():
-            # Check if already initialized
-            if (target_dir / "pyproject.toml").exists():
-                console.print(f"[red]error:[/red] Project is already initialized in `{target_dir}` (`pyproject.toml` file exists)")
-                raise typer.Exit(1)
-            if (target_dir / ".modelops-bundle").exists():
-                console.print(f"[red]error:[/red] Project is already initialized in `{target_dir}` (`.modelops-bundle` directory exists)")
-                raise typer.Exit(1)
-        else:
-            # Create the directory
-            target_dir.mkdir(parents=True)
-            console.print(f"[green]✓[/green] Created project directory: {target_dir}")
-
-        create_templates = True
-        # Change to the new directory for initialization
-        original_dir = Path.cwd()
-        os.chdir(target_dir)
+    # Check if already initialized (unless creating new dir)
+    if target_dir.exists():
+        _check_already_initialized(target_dir)
     else:
-        # No path - use current directory
-        target_dir = Path.cwd()
-        project_name = target_dir.name
-        create_templates = False
+        # Create new directory
+        target_dir.mkdir(parents=True)
+        console.print(f"[green]✓[/green] Created directory: {target_dir}")
 
-        # Check if already initialized
-        if (target_dir / "pyproject.toml").exists():
-            console.print(f"[red]error:[/red] Project is already initialized in `{target_dir}` (`pyproject.toml` file exists)")
-            raise typer.Exit(1)
-        if ProjectContext.is_initialized():
-            console.print(f"[red]error:[/red] Project is already initialized in `{target_dir}` (`.modelops-bundle` directory exists)")
-            raise typer.Exit(1)
+    # Initialize project structure (no chdir needed!)
+    ctx = ProjectContext.init(target_dir)
+    pin_env(ctx.storage_dir, env)
 
     try:
-        # ALL business logic is in the service layer - loads from environment
+        # Create config from environment
         config = initialize_bundle(
             project_name=project_name,
             env_name=env,
@@ -276,217 +289,33 @@ def init(
             threshold_mb=threshold_mb,
         )
 
-        # Initialize project context and save config
-        ctx = ProjectContext.init()
+        # Save all config files
         save_config(config, ctx)
         save_tracked(TrackedFiles(), ctx)
+        save_state(SyncState(), ctx)
 
-        # Create project templates if new directory
+        # Create templates if new project
         if create_templates:
             create_project_templates(target_dir, project_name)
             console.print(f"[green]✓[/green] Created project templates")
 
+        # Success message
         console.print(f"[green]✓[/green] Initialized project `{project_name}` with environment '{env}'")
         console.print(f"[dim]Registry: {config.registry_ref}[/dim]")
 
-        # Show storage info if configured
         if config.storage and config.storage.provider:
             console.print(f"[dim]Storage: {config.storage.provider} ({config.storage.container})[/dim]")
 
         # Show next steps for new projects
-        if create_templates:
+        if create_templates and path:
             console.print("\n[dim]To get started:[/dim]")
             console.print(f"  cd {path}")
-            console.print("  mops-bundle discover --interactive --save")
-            console.print("  mops-bundle manifest")
+            console.print("  mops-bundle add <files>  # Track your model files")
+            console.print("  mops-bundle push        # Push to registry")
 
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ValueError) as e:
         console.print(f"[red]✗[/red] {e}")
         raise typer.Exit(1)
-    except ValueError as e:
-        console.print(f"[red]✗[/red] {e}")
-        raise typer.Exit(1)
-    finally:
-        # Change back to original directory if we changed it
-        if path and 'original_dir' in locals():
-            os.chdir(original_dir)
-
-
-@app.command()
-def discover(
-    interactive: bool = typer.Option(False, "--interactive", "-i", help="Interactive mode to select models"),
-    save: bool = typer.Option(False, "--save", help="Save discovered models to pyproject.toml"),
-    all: bool = typer.Option(False, "--all", help="Show all classes, not just models"),
-):
-    """Discover models in the current project."""
-    # Discover models
-    console.print("[bold]Scanning for models...[/bold]")
-    models = discover_models()
-
-    if not models:
-        console.print("[yellow]No models found[/yellow]")
-        console.print("[dim]Models should have 'simulate' or 'parameters' methods[/dim]")
-        return
-
-    # Filter to actual models unless --all
-    if not all:
-        models = [m for m in models if m.get("has_simulate") or m.get("has_parameters")]
-
-    if not models:
-        console.print("[yellow]No models with simulate/parameters methods found[/yellow]")
-        console.print("[dim]Use --all to see all classes[/dim]")
-        return
-
-    if interactive:
-        # Interactive selection
-        from rich.prompt import Confirm
-        console.print(f"\n[bold]Found {len(models)} models:[/bold]")
-
-        selected_models = []
-        for model in models:
-            console.print(f"\n[cyan]{model['full_path']}[/cyan]")
-            console.print(f"  File: {model['file_path']}")
-            console.print(f"  Line: {model['line_number']}")
-            if model.get('has_simulate'):
-                console.print("  ✓ Has simulate method")
-            if model.get('has_parameters'):
-                console.print("  ✓ Has parameters method")
-
-            if Confirm.ask("  Include this model?", default=True):
-                selected_models.append(model)
-
-        models = selected_models
-        if not models:
-            console.print("[yellow]No models selected[/yellow]")
-            return
-    else:
-        # Non-interactive: show table
-        table = Table(title=f"Discovered Models ({len(models)})")
-        table.add_column("Model", style="cyan")
-        table.add_column("File")
-        table.add_column("Line", justify="right")
-        table.add_column("Methods")
-
-        for model in models:
-            methods = []
-            if model.get('has_simulate'):
-                methods.append("simulate")
-            if model.get('has_parameters'):
-                methods.append("parameters")
-
-            table.add_row(
-                model['full_path'],
-                str(model['file_path']),
-                str(model['line_number']),
-                ", ".join(methods) if methods else "[dim]none[/dim]"
-            )
-
-        console.print(table)
-
-    # Save to pyproject.toml if requested
-    if save:
-        pyproject_path = Path("pyproject.toml")
-        if not pyproject_path.exists():
-            console.print("[red]✗[/red] No pyproject.toml found")
-            console.print("[dim]Run 'modelops-bundle init --with-template' to create one[/dim]")
-            return
-
-        # Read existing content
-        import tomllib
-        import toml
-
-        with open(pyproject_path, "rb") as f:
-            data = tomllib.load(f)
-
-        # Ensure tool.modelops-bundle section exists
-        if "tool" not in data:
-            data["tool"] = {}
-        if "modelops-bundle" not in data["tool"]:
-            data["tool"]["modelops-bundle"] = {}
-
-        # Add models
-        if "models" not in data["tool"]["modelops-bundle"]:
-            data["tool"]["modelops-bundle"]["models"] = []
-
-        existing_ids = {m.get("id", m["class"]) for m in data["tool"]["modelops-bundle"]["models"]}
-
-        added = 0
-        for model in models:
-            model_id = model['full_path']
-            if model_id not in existing_ids:
-                # Determine files pattern for this model
-                file_path = Path(model['file_path'])
-                if file_path.parent == Path("."):
-                    files_pattern = str(file_path)
-                else:
-                    # Use directory pattern
-                    files_pattern = f"{file_path.parent}/**/*.py"
-
-                model_entry = {
-                    "id": model_id,
-                    "class": model['full_path'],
-                    "files": [files_pattern]
-                }
-                data["tool"]["modelops-bundle"]["models"].append(model_entry)
-                added += 1
-
-        if added > 0:
-            # Write back (we need toml library for writing)
-            try:
-                import toml
-                with open(pyproject_path, "w") as f:
-                    toml.dump(data, f)
-                console.print(f"[green]✓[/green] Added {added} models to pyproject.toml")
-            except ImportError:
-                console.print("[yellow]Warning: Could not save (toml package not installed)[/yellow]")
-                console.print("[dim]Install with: pip install toml[/dim]")
-        else:
-            console.print("[dim]All models already in pyproject.toml[/dim]")
-
-
-# TODO: Remove this commented-out manifest generation command entirely
-# This was causing CLI conflicts with the registry inspection manifest command.
-# In the future, manifest.json should be generated automatically during push operations,
-# not as a manual CLI command. The push command should examine all registered/added models
-# and create the manifest automatically.
-
-# @app.command()
-# def manifest(
-#     output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output file (default: manifest.json)"),
-#     check: bool = typer.Option(False, "--check", help="Check if manifest is up-to-date"),
-# ):
-#     """Generate manifest.json for the bundle."""
-#     output_path = output or Path("manifest.json")
-#
-#     # Build manifest
-#     console.print("[bold]Generating manifest...[/bold]")
-#     try:
-#         manifest_data = build_manifest(output_path=output_path if not check else None)
-#
-#         if check:
-#             # Check if existing manifest matches
-#             if output_path.exists():
-#                 existing = load_manifest(output_path)
-#                 if existing.get("bundle_digest") == manifest_data.get("bundle_digest"):
-#                     console.print("[green]✓[/green] Manifest is up-to-date")
-#                 else:
-#                     console.print("[yellow]⚠[/yellow] Manifest is out of date")
-#                     console.print(f"  Current: {existing.get('bundle_digest', 'none')}")
-#                     console.print(f"  Expected: {manifest_data.get('bundle_digest', 'none')}")
-#                     raise typer.Exit(1)
-#             else:
-#                 console.print("[yellow]⚠[/yellow] No manifest.json found")
-#                 raise typer.Exit(1)
-#         else:
-#             # Display summary
-#             console.print(f"[green]✓[/green] Generated manifest.json")
-#             console.print(f"  Bundle digest: {manifest_data.get('bundle_digest', 'none')[:16]}...")
-#             console.print(f"  Models: {len(manifest_data.get('models', {}))}")
-#             console.print(f"  Files: {len(manifest_data.get('files', {}))}")
-#
-#     except Exception as e:
-#         console.print(f"[red]✗[/red] Failed to generate manifest: {e}")
-#         raise typer.Exit(1)
 
 
 @app.command()
@@ -519,7 +348,7 @@ def add(
                 if item.is_file():
                     # Store as project-relative path
                     try:
-                        rel_path = ctx.resolve(item)
+                        rel_path = ctx.to_project_relative(item)
                         # Check if file is ignored (unless --force is used)
                         if not force and ctx.should_ignore(rel_path):
                             skipped_ignored.append(rel_path)
@@ -537,7 +366,7 @@ def add(
 
         # Handle regular files
         # Store as project-relative path
-        rel_path = ctx.resolve(file)
+        rel_path = ctx.to_project_relative(file)
 
         # Check if file is ignored (unless --force is used)
         if not force and ctx.should_ignore(rel_path):
@@ -584,7 +413,7 @@ def remove(
     for file in files:
         # Convert to project-relative path
         try:
-            rel_path = ctx.resolve(file)
+            rel_path = ctx.to_project_relative(file)
             if str(rel_path) in tracked.files:
                 tracked.remove(rel_path)
                 removed.append(rel_path)
@@ -635,7 +464,10 @@ def status(
 ):
     """Show bundle status."""
     ctx = require_project_context()
-    
+
+    # Load environment (storage not always required for status)
+    load_env_for_command(ctx.storage_dir, require_storage=False)
+
     try:
         config = load_config(ctx)
         tracked = load_tracked(ctx)
@@ -692,7 +524,7 @@ def status(
         table.add_column("Status")
         table.add_column("Size", justify="right")
         # Show storage column if using blob storage or explicit mode
-        if config.storage.uses_blob_storage or config.storage.mode != "auto":
+        if config.storage and (config.storage.uses_blob_storage or config.storage.mode != "auto"):
             table.add_column("Storage", style="dim")
         
         # Use summary for a cleaner display
@@ -756,7 +588,7 @@ def status(
                 if path in storage_info:
                     # Use remote storage info if available
                     storage = storage_info[path]
-                elif file_info:
+                elif file_info and config.storage:
                     # For local files, classify based on policy
                     storage_type, _ = config.storage.classify(Path(path), file_info.size)
                     storage = format_storage_display(storage_type, config=config)
@@ -767,7 +599,7 @@ def status(
                 status_map.get(change_type, str(change_type)),
                 humanize_size(file_info.size) if file_info else "-"
             ]
-            if config.storage.uses_blob_storage or config.storage.mode != "auto":
+            if config.storage and (config.storage.uses_blob_storage or config.storage.mode != "auto"):
                 row_data.append(storage)
             
             # Always add row, even for deleted files where file_info is None
@@ -864,7 +696,10 @@ def push(
     force: bool = typer.Option(False, "--force", help="Push even if tag has moved (bypass race protection)"),
 ):
     """Push tracked files to registry."""
-    ctx = require_project_context(require_storage=True)
+    ctx = require_project_context()
+
+    # Load environment and set up storage credentials
+    load_env_for_command(ctx.storage_dir, require_storage=True)
 
     try:
         config = load_config(ctx)
@@ -919,7 +754,7 @@ def push(
         for file in plan.files_to_upload:
             # Determine storage destination
             storage_display = ""
-            if config.storage.uses_blob_storage:
+            if config.storage and config.storage.uses_blob_storage:
                 from .storage_models import StorageType
                 storage_type, _ = config.storage.classify(Path(file.path), file.size)
                 storage_display = " " + format_storage_display(storage_type, config=config, direction="→")
@@ -982,7 +817,10 @@ def pull(
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be pulled"),
 ):
     """Pull bundle from registry."""
-    ctx = require_project_context(require_storage=True)
+    ctx = require_project_context()
+
+    # Load environment and set up storage credentials
+    load_env_for_command(ctx.storage_dir, require_storage=True)
 
     try:
         config = load_config(ctx)
@@ -1049,7 +887,7 @@ def pull(
             storage_display = ""
             if file.path in storage_info:
                 storage_display = " " + storage_info[file.path]
-            else:
+            elif config.storage:
                 # Fallback: classify based on policy if no index info
                 from .storage_models import StorageType
                 storage_type, _ = config.storage.classify(Path(file.path), file.size)
@@ -1273,7 +1111,7 @@ def diff(
     tag: Optional[str] = typer.Option(None, help="Tag to compare"),
 ):
     """Show differences between local and remote."""
-    ctx = require_project_context(require_storage=True)
+    ctx = require_project_context()
 
     try:
         config = load_config(ctx)
@@ -1452,6 +1290,102 @@ def _apply_smart_filtering(all_manifests: List[dict], limit: int) -> List[dict]:
     result.sort(key=sort_key, reverse=True)
 
     return result
+
+
+# Developer subcommand
+dev_app = typer.Typer(help="Developer tools for managing environments")
+app.add_typer(dev_app, name="dev")
+
+
+@dev_app.command(name="switch")
+def dev_switch(
+    env: str = typer.Argument(..., help="Environment name to switch to")
+):
+    """Switch the pinned environment for this project.
+
+    Example:
+        mops-bundle dev switch local    # Switch to local environment
+        mops-bundle dev switch dev       # Switch to dev environment
+    """
+    from .env_manager import pin_env, ENV_DIR
+
+    ctx = require_project_context()
+
+    # Check if environment exists
+    env_file = ENV_DIR / f"{env}.yaml"
+    if not env_file.exists():
+        console.print(f"[red]✗[/red] Environment '{env}' not found")
+        console.print(f"[dim]Available environments in {ENV_DIR}:[/dim]")
+
+        # List available environments
+        if ENV_DIR.exists():
+            envs = sorted([f.stem for f in ENV_DIR.glob("*.yaml")])
+            if envs:
+                for e in envs:
+                    console.print(f"  • {e}")
+            else:
+                console.print("  [dim]No environments found[/dim]")
+        raise typer.Exit(1)
+
+    # Pin the new environment
+    pin_env(ctx.storage_dir, env)
+    console.print(f"[green]✓[/green] Switched to environment '{env}'")
+
+    # Show the new registry
+    try:
+        from modelops_contracts import BundleEnvironment
+        environment = BundleEnvironment.load(env)
+        if environment.registry:
+            console.print(f"[dim]Registry: {environment.registry.login_server}[/dim]")
+    except Exception:
+        pass
+
+
+@dev_app.command(name="env")
+def dev_env():
+    """Show the current pinned environment and available environments.
+
+    Example:
+        mops-bundle dev env
+    """
+    from .env_manager import read_pinned_env, ENV_DIR
+
+    ctx = require_project_context()
+
+    # Show current environment
+    try:
+        current_env = read_pinned_env(ctx.storage_dir)
+        console.print(f"[bold]Current environment:[/bold] {current_env}")
+
+        # Try to show registry info
+        try:
+            from modelops_contracts import BundleEnvironment
+            environment = BundleEnvironment.load(current_env)
+            if environment.registry:
+                console.print(f"[dim]Registry: {environment.registry.login_server}[/dim]")
+            if environment.storage:
+                console.print(f"[dim]Storage: {environment.storage.provider} ({environment.storage.container})[/dim]")
+        except Exception:
+            pass
+    except FileNotFoundError:
+        console.print("[yellow]No environment pinned yet[/yellow]")
+        console.print("[dim]Use 'mops-bundle dev switch <env>' to set one[/dim]")
+
+    # List available environments
+    console.print("\n[bold]Available environments:[/bold]")
+    if ENV_DIR.exists():
+        envs = sorted([f.stem for f in ENV_DIR.glob("*.yaml")])
+        if envs:
+            for env in envs:
+                marker = " [cyan]←[/cyan]" if 'current_env' in locals() and env == current_env else ""
+                console.print(f"  • {env}{marker}")
+        else:
+            console.print("  [dim]No environments found[/dim]")
+    else:
+        console.print(f"  [dim]No environments directory at {ENV_DIR}[/dim]")
+
+    console.print("\n[dim]Run 'mops infra up' to create cloud environments[/dim]")
+    console.print("[dim]Run 'make start' to create local environment[/dim]")
 
 
 def main():

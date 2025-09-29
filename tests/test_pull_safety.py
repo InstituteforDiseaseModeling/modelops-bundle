@@ -77,7 +77,7 @@ class BaseMockAdapter:
 
 
 # Skip if no registry available
-REGISTRY_AVAILABLE = os.environ.get("REGISTRY_URL", "localhost:5555")
+REGISTRY_AVAILABLE = "localhost:5555"
 
 
 @pytest.fixture

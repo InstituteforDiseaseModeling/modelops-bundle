@@ -82,7 +82,7 @@ class BaseMockAdapter:
                 file_path.write_text("mock content")
 
 
-REGISTRY_AVAILABLE = os.environ.get("REGISTRY_URL", "localhost:5555")
+REGISTRY_AVAILABLE = "localhost:5555"
 
 
 @pytest.fixture

@@ -13,15 +13,8 @@ def get_test_registry() -> str:
     Raises:
         pytest.skip: If registry configuration is unsafe for testing
     """
-    registry_url = os.environ.get("REGISTRY_URL", "localhost:5555")
-
-    # SAFETY: Prevent accidental use of cloud registries in tests
-    if any(cloud in registry_url for cloud in ['.azurecr.io', '.gcr.io', 'public.ecr.aws', 'registry.hub.docker.com']):
-        pytest.skip(f"Skipping test: REGISTRY_URL '{registry_url}' points to cloud registry. "
-                   f"Tests should only use localhost registries. "
-                   f"Unset REGISTRY_URL or set it to 'localhost:5555'")
-
-    return registry_url
+    # Tests always use localhost:5555
+    return "localhost:5555"
 
 
 def ensure_safe_test_environment():

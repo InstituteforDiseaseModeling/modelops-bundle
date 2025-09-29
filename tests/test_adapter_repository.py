@@ -303,7 +303,7 @@ class TestModelOpsBundleRepositoryIntegration:
     def registry_ref(self):
         """Get test registry reference."""
         import uuid
-        registry = os.environ.get("REGISTRY_URL", "localhost:5555")
+        registry = "localhost:5555"
         unique_id = str(uuid.uuid4())[:8]
         return f"{registry}/test_adapter_{unique_id}"
     

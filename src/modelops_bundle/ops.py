@@ -197,7 +197,7 @@ def _index_to_remote_state(index: BundleIndex, manifest_digest: str) -> RemoteSt
 # ============= File I/O =============
 
 def load_config(ctx: Optional[ProjectContext] = None) -> BundleConfig:
-    """Load bundle configuration and set up credentials from environment."""
+    """Load bundle configuration with automatic migration for old configs."""
     if ctx is None:
         ctx = ProjectContext()
 
@@ -207,21 +207,21 @@ def load_config(ctx: Optional[ProjectContext] = None) -> BundleConfig:
     with ctx.config_path.open() as f:
         data = yaml.safe_load(f)
 
-    config = BundleConfig(**data)
+    # Migration: if old config has environment field, create pin file
+    if "environment" in data:
+        from .env_manager import pin_env
+        env_name = data.pop("environment")
+        pin_path = ctx.storage_dir / "env"
 
-    # Load environment to set up credentials if storage is configured
-    if config.environment and config.storage and config.storage.provider:
-        from modelops_contracts import BundleEnvironment
-        try:
-            environment = BundleEnvironment.load(config.environment)
-            if environment.storage:
-                ctx._setup_storage_credentials(environment.storage)
-        except FileNotFoundError:
-            # Environment file might have been deleted, but we can still try
-            # to use environment variables if they're already set
-            pass
+        if not pin_path.exists():
+            # Silently migrate to pin file
+            pin_env(ctx.storage_dir, env_name)
 
-    return config
+            # Rewrite config without environment field
+            with ctx.config_path.open("w") as f:
+                yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+
+    return BundleConfig(**data)
 
 
 def save_config(config: BundleConfig, ctx: Optional[ProjectContext] = None) -> None:
@@ -469,7 +469,7 @@ def pull_apply(
         for entry in index.files.values()
     )
     if has_blob_files:
-        if not config.storage.uses_blob_storage:
+        if not config.storage or not config.storage.uses_blob_storage:
             raise BlobProviderMissingError()
         blob_store = make_blob_store(config.storage)
     
@@ -617,10 +617,11 @@ def push_apply(
             logger.warning(f"Tag '{plan.tag}' has moved but proceeding with --force")
     
     # Check for blob storage requirements upfront
-    files_to_check = [(Path(f.path), f.size) for f in plan.manifest_files]
-    needs_blob = config.storage.check_files_for_blob_requirement(files_to_check)
-    if needs_blob:
-        raise BlobStorageRequiredError(needs_blob)
+    if config.storage:
+        files_to_check = [(Path(f.path), f.size) for f in plan.manifest_files]
+        needs_blob = config.storage.check_files_for_blob_requirement(files_to_check)
+        if needs_blob:
+            raise BlobStorageRequiredError(needs_blob)
     
     # Always use index-based push
     manifest_digest = _push_apply_with_index(config, plan, ctx)
