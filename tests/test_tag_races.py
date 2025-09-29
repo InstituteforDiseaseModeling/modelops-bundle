@@ -93,7 +93,7 @@ def test_project(tmp_path):
         ctx = ProjectContext.init()
         
         # Save config
-        config = BundleConfig(
+        config = BundleConfig(environment="local", 
             registry_ref="localhost:5555/test",
             default_tag="latest"
         )

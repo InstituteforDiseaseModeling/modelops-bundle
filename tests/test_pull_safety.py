@@ -35,7 +35,8 @@ from tests.test_registry_utils import skip_if_no_registry
 # Base mock adapter for tests
 class BaseMockAdapter:
     """Base mock adapter with common methods."""
-    def __init__(self, remote=None):
+    def __init__(self, remote=None, auth_provider=None):
+        """Initialize mock adapter, ignoring auth_provider for testing."""
         self.remote = remote
     def resolve_tag_to_digest(self, ref, tag):
         # Return the actual manifest digest if we have remote state
@@ -90,17 +91,19 @@ def registry_ref():
 class TestPullSafetyGuards:
     """Test safety guards prevent data loss during pull."""
     
+    @pytest.mark.integration
     def test_pull_overwrites_untracked_files_bug(self, tmp_path, monkeypatch, registry_ref):
         """Test that pull correctly prevents overwriting untracked files without --overwrite.
-        
+
         This test was previously marked as xfail but the bug has been fixed - pull now
         correctly raises an error when it would overwrite untracked files.
         """
+        skip_if_no_registry()
         monkeypatch.chdir(tmp_path)
         ctx = ProjectContext.init()
         
         # Setup: Create config and some tracked files
-        config = BundleConfig(registry_ref=registry_ref)
+        config = BundleConfig(environment="local", registry_ref=registry_ref)
         save_config(config, ctx)
         
         # Create and track file1.txt
@@ -156,13 +159,15 @@ class TestPullSafetyGuards:
         current_content = untracked_file.read_text() 
         assert current_content == "my secret untracked data", "Untracked file should be preserved!"
     
+    @pytest.mark.integration
     def test_pull_with_overwrite_allows_untracked_overwrites(self, tmp_path, monkeypatch, registry_ref):
         """Test that pull with --overwrite allows overwriting untracked files."""
+        skip_if_no_registry()
         monkeypatch.chdir(tmp_path)
         ctx = ProjectContext.init()
         
         # Setup similar to previous test
-        config = BundleConfig(registry_ref=registry_ref)
+        config = BundleConfig(environment="local", registry_ref=registry_ref)
         save_config(config, ctx)
         
         file1 = tmp_path / "file1.txt"
@@ -213,7 +218,7 @@ class TestPullSafetyGuards:
         
         # Setup project
         ctx = ProjectContext.init()
-        config = BundleConfig(registry_ref="test/repo")
+        config = BundleConfig(environment="local", registry_ref="test/repo")
         save_config(config)
         
         # Create and track a file
@@ -248,8 +253,8 @@ class TestPullSafetyGuards:
         
         # Mock adapter to return our remote state
         class MockAdapter(BaseMockAdapter):
-            def __init__(self):
-                super().__init__(remote)
+            def __init__(self, auth_provider=None, registry_ref=None):
+                super().__init__(remote, auth_provider=auth_provider)
             def get_remote_state(self, ref, tag):
                 return remote
             def pull_files(self, registry_ref=None, reference=None, output_dir=None, ctx=None, **kwargs):
@@ -279,7 +284,7 @@ class TestPullSafetyGuards:
         
         # Setup project
         ctx = ProjectContext.init()
-        config = BundleConfig(registry_ref="test/repo")
+        config = BundleConfig(environment="local", registry_ref="test/repo")
         save_config(config)
         
         # Create and track a file
@@ -311,8 +316,8 @@ class TestPullSafetyGuards:
         
         # Mock adapter
         class MockAdapter(BaseMockAdapter):
-            def __init__(self):
-                super().__init__(remote)
+            def __init__(self, auth_provider=None, registry_ref=None):
+                super().__init__(remote, auth_provider=auth_provider)
             def get_remote_state(self, ref, tag):
                 return remote
             def pull_files(self, registry_ref=None, reference=None, output_dir=None, ctx=None, **kwargs):
@@ -338,7 +343,7 @@ class TestPullSafetyGuards:
         
         # Setup project
         ctx = ProjectContext.init()
-        config = BundleConfig(registry_ref="test/repo")
+        config = BundleConfig(environment="local", registry_ref="test/repo")
         save_config(config)
         
         # Create and track a file
@@ -365,8 +370,8 @@ class TestPullSafetyGuards:
         
         # Mock adapter
         class MockAdapter(BaseMockAdapter):
-            def __init__(self):
-                super().__init__(remote)
+            def __init__(self, auth_provider=None, registry_ref=None):
+                super().__init__(remote, auth_provider=auth_provider)
             def get_remote_state(self, ref, tag):
                 return remote
             def pull_files(self, registry_ref=None, reference=None, output_dir=None, ctx=None, **kwargs):
@@ -395,7 +400,7 @@ class TestPullSafetyGuards:
         
         # Setup project with multiple files
         ctx = ProjectContext.init()
-        config = BundleConfig(registry_ref="test/repo")
+        config = BundleConfig(environment="local", registry_ref="test/repo")
         save_config(config)
         
         # Create files with different change types
@@ -445,8 +450,8 @@ class TestPullSafetyGuards:
         
         # Mock adapter
         class MockAdapter(BaseMockAdapter):
-            def __init__(self):
-                super().__init__(remote)
+            def __init__(self, auth_provider=None, registry_ref=None):
+                super().__init__(remote, auth_provider=auth_provider)
             def get_remote_state(self, ref, tag):
                 return remote
             def pull_selected(self, registry_ref, digest, entries, output_dir, blob_store=None, cas=None, link_mode="auto"):
@@ -504,7 +509,7 @@ class TestPullSafetyGuards:
         # Setup project1 and push initial state
         monkeypatch.chdir(project1)
         ctx1 = ProjectContext.init()
-        config1 = BundleConfig(registry_ref=registry_ref)
+        config1 = BundleConfig(environment="local", registry_ref=registry_ref)
         save_config(config1)
         
         file1 = project1 / "file.txt"
@@ -520,7 +525,7 @@ class TestPullSafetyGuards:
         # Setup project2 and pull
         monkeypatch.chdir(project2)
         ctx2 = ProjectContext.init()
-        config2 = BundleConfig(registry_ref=registry_ref)
+        config2 = BundleConfig(environment="local", registry_ref=registry_ref)
         save_config(config2)
         
         # Create empty tracked files (will be populated by pull)

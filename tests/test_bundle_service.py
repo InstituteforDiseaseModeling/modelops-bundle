@@ -20,7 +20,11 @@ from modelops_bundle.service_types import (
 
 class MockAdapter:
     """Mock OrasAdapter for testing."""
-    
+
+    def __init__(self, auth_provider=None):
+        """Initialize mock adapter, ignoring auth_provider for testing."""
+        pass
+
     def resolve_tag_to_digest(self, registry_ref, tag):
         return f"sha256:mock_{tag}"
     
@@ -77,7 +81,7 @@ def mock_deps():
 @pytest.fixture
 def service_with_mocks(mock_deps):
     """Create service with mocked dependencies."""
-    return BundleService(mock_deps)
+    return BundleService(deps=mock_deps)
 
 
 @pytest.fixture
@@ -85,7 +89,7 @@ def real_service(tmp_path):
     """Create service with real filesystem."""
     ctx = ProjectContext.init(tmp_path)  # Fix: use correct parameter name
     deps = BundleDeps(ctx=ctx, adapter=MockAdapter())
-    return BundleService(deps)
+    return BundleService(deps=deps)
 
 
 class TestBundleServiceInit:
@@ -93,17 +97,21 @@ class TestBundleServiceInit:
     
     def test_service_default_init(self):
         """Test service initializes with defaults."""
-        with patch('modelops_bundle.bundle_service.ProjectContext') as mock_ctx_class:
-            mock_ctx = Mock()
-            mock_ctx_class.return_value = mock_ctx
-            
-            service = BundleService()
-            assert service.deps.ctx == mock_ctx
-            assert isinstance(service.deps.adapter, OrasAdapter)
+        with patch('modelops_bundle.bundle_service.load_config') as mock_load:
+            mock_load.return_value = Mock(spec=BundleConfig, registry_ref="test")
+            with patch('modelops_bundle.auth.get_auth_provider') as mock_auth:
+                mock_auth.return_value = None
+                with patch('modelops_bundle.bundle_service.ProjectContext') as mock_ctx_class:
+                    mock_ctx = Mock()
+                    mock_ctx_class.return_value = mock_ctx
+
+                    service = BundleService()
+                    assert service.deps.ctx == mock_ctx
+                    assert isinstance(service.deps.adapter, OrasAdapter)
     
     def test_service_with_deps(self, mock_deps):
         """Test service accepts custom dependencies."""
-        service = BundleService(mock_deps)
+        service = BundleService(deps=mock_deps)
         assert service.deps == mock_deps
     
     def test_fresh_state_loading(self, service_with_mocks):

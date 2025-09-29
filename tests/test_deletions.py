@@ -137,7 +137,7 @@ class TestDeletionDetection:
         monkeypatch.chdir(sample_project)
         
         # Initialize
-        config = BundleConfig(registry_ref=registry_ref)
+        config = BundleConfig(environment="local", registry_ref=registry_ref)
         save_config(config)
         
         tracked = TrackedFiles()
@@ -175,7 +175,7 @@ class TestDeletionDetection:
         monkeypatch.chdir(sample_project)
         
         # Initialize
-        config = BundleConfig(registry_ref=registry_ref)
+        config = BundleConfig(environment="local", registry_ref=registry_ref)
         save_config(config)
         
         # Push both files initially
@@ -239,7 +239,7 @@ class TestDeletionDetection:
         monkeypatch.chdir(sample_project)
         
         # Initialize
-        config = BundleConfig(registry_ref=registry_ref)
+        config = BundleConfig(environment="local", registry_ref=registry_ref)
         save_config(config)
         
         # Push both files initially

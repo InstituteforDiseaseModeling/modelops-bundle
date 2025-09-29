@@ -1,9 +1,12 @@
 """High-level service layer for bundle operations."""
 
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional
+from modelops_contracts import AuthProvider
+
 
 from .context import ProjectContext
 from .core import (
@@ -26,6 +29,7 @@ from .ops import (
     push_apply,
 )
 from .oras import OrasAdapter
+from .policy import StoragePolicy
 from .service_types import (
     AddResult,
     ChangeInfo,
@@ -58,15 +62,35 @@ class BundleService:
     - Progress callback support for custom UIs
     """
     
-    def __init__(self, deps: Optional[BundleDeps] = None):
-        """Initialize service with optional dependency injection."""
+    def __init__(
+        self,
+        auth_provider: Optional[AuthProvider] = None,
+        deps: Optional[BundleDeps] = None
+    ):
+        """Initialize with auth provider OR deps.
+
+        Args:
+            auth_provider: Auth provider for registry/storage operations
+            deps: Full dependency injection (for testing)
+        """
         if deps is None:
             ctx = ProjectContext()
+
+            # Always load config to get registry_ref
+            config = load_config(ctx)
+
+            # Use provided auth or get from local module
+            if auth_provider is None:
+                from .auth import get_auth_provider
+                # Get auth based on environment config
+                auth_provider = get_auth_provider(config.registry_ref)
+
             deps = BundleDeps(
                 ctx=ctx,
-                adapter=OrasAdapter()
+                adapter=OrasAdapter(auth_provider=auth_provider, registry_ref=config.registry_ref)
             )
         self.deps = deps
+
     
     # Core properties (loaded fresh each time)
     @property
@@ -427,3 +451,79 @@ class BundleService:
         """
         preview = self.plan_pull(reference, overwrite=overwrite)
         return self.apply_pull(preview, progress=progress)
+
+
+def initialize_bundle(
+    project_name: str,
+    env_name: str = "local",
+    tag: str = "latest",
+    threshold_mb: int = 50,
+) -> BundleConfig:
+    """Initialize a bundle configuration from an environment.
+
+    Args:
+        project_name: Name of the project/model
+        env_name: Environment to load from ~/.modelops/bundle-env/
+        tag: Default tag for the bundle
+        threshold_mb: Size threshold in MB for blob storage
+
+    Returns:
+        BundleConfig ready to be saved
+
+    Raises:
+        ValueError: If environment doesn't exist or is invalid
+    """
+    from modelops_contracts import BundleEnvironment
+
+    # Load environment configuration
+    try:
+        environment = BundleEnvironment.load(env_name)
+    except FileNotFoundError:
+        raise ValueError(
+            f"Environment '{env_name}' not found. "
+            f"Available environments are in ~/.modelops/bundle-env/\n"
+            f"Run 'make start' to set up local environment, or "
+            f"'mops infra up' to set up cloud environment."
+        )
+
+    # Extract registry from environment
+    if not environment.registry:
+        raise ValueError(f"Environment '{env_name}' has no registry configured")
+
+    registry = environment.registry.login_server
+
+    # Build full registry reference with project name
+    if "/" not in registry or registry.endswith("/"):
+        registry_ref = f"{registry.rstrip('/')}/{project_name}"
+    else:
+        # Registry already includes project/repo, use as-is
+        registry_ref = registry
+
+    # Configure storage from environment
+    if environment.storage:
+        storage_policy = StoragePolicy(
+            provider=environment.storage.provider,
+            container=environment.storage.container,
+            prefix="",
+            threshold_bytes=threshold_mb * 1024 * 1024,
+            mode="auto"
+        )
+    else:
+        # OCI-only mode (no external storage)
+        storage_policy = StoragePolicy(
+            provider="",
+            container="",
+            prefix="",
+            threshold_bytes=threshold_mb * 1024 * 1024,
+            mode="oci-inline"  # Force all to OCI
+        )
+
+    return BundleConfig(
+        environment=env_name,
+        registry_ref=registry_ref,
+        default_tag=tag,
+        storage=storage_policy
+    )
+
+
+

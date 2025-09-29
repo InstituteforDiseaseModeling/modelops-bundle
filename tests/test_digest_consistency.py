@@ -46,7 +46,7 @@ class TestDigestConsistency:
                 file2.write_text("content2")
                 
                 # Set up config and tracked files
-                config = BundleConfig(
+                config = BundleConfig(environment="local", 
                     registry_ref=registry_ref,
                     default_tag="v1"
                 )
@@ -87,7 +87,7 @@ class TestDigestConsistency:
                 test_file.write_text("test content")
                 
                 # Set up config and tracked files
-                config = BundleConfig(
+                config = BundleConfig(environment="local", 
                     registry_ref=registry_ref,
                     default_tag="latest"
                 )
@@ -137,7 +137,7 @@ class TestDigestConsistency:
                 test_file.write_text("test")
                 
                 # Set up config and tracked files
-                config = BundleConfig(
+                config = BundleConfig(environment="local", 
                     registry_ref=registry_ref,
                     default_tag="test"
                 )
@@ -199,7 +199,7 @@ class TestDigestConsistency:
                 config_file.write_text("key: value")
                 
                 # Set up config and tracked files
-                config = BundleConfig(
+                config = BundleConfig(environment="local", 
                     registry_ref=registry_ref,
                     default_tag="stable"
                 )
@@ -249,7 +249,7 @@ class TestDigestConsistency:
                 test_file.write_text("test")
                 
                 # Set up config and tracked files
-                config = BundleConfig(
+                config = BundleConfig(environment="local", 
                     registry_ref=registry_ref,
                     default_tag="head-test"
                 )
@@ -290,7 +290,7 @@ class TestDigestConsistency:
                 test_file.write_text("consistency test")
                 
                 # Set up config and tracked files
-                config = BundleConfig(
+                config = BundleConfig(environment="local", 
                     registry_ref=registry_ref,
                     default_tag="retry-test"
                 )
@@ -351,7 +351,7 @@ class TestDigestConsistency:
                 test_file.write_text("test")
                 
                 # Set up config and tracked files
-                config = BundleConfig(
+                config = BundleConfig(environment="local", 
                     registry_ref=registry_ref,
                     default_tag="normal"
                 )

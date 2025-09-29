@@ -1,0 +1,63 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv with Python ${{ matrix.python-version }}
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-dependency-glob: |
+            **/pyproject.toml
+            **/uv.lock
+
+      - name: Sync dependencies
+        run: |
+          uv sync --frozen
+
+      - name: Start dev services
+        run: docker compose -f dev/docker-compose.yml up -d
+
+      - name: Setup local env file
+        run: bash dev/setup_local_env.sh
+
+      - name: Run unit tests
+        run: |
+          # Run non-integration tests (fast)
+          uv run pytest -m "not integration" --cov=src/modelops_bundle --cov-report=term-missing -v
+        env:
+          # Ensure tests use localhost registry
+          REGISTRY_URL: localhost:5555
+          MODELOPS_BUNDLE_INSECURE: "true"
+
+      - name: Run integration tests
+        run: |
+          # Run integration tests with local registry
+          uv run pytest -m integration -v
+        env:
+          # Integration tests need registry access
+          REGISTRY_URL: localhost:5555
+          MODELOPS_BUNDLE_INSECURE: "true"
+        timeout-minutes: 5  # GitHub Actions timeout for the whole step
+
+      - name: Stop local registry
+        if: always()
+        run: |
+          docker stop test-registry || true
+          docker rm test-registry || true

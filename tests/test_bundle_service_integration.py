@@ -12,8 +12,9 @@ from modelops_bundle.errors import TagMovedError
 
 class MockOrasAdapter:
     """Mock adapter that simulates registry without network."""
-    
-    def __init__(self):
+
+    def __init__(self, auth_provider=None):
+        """Initialize mock adapter, ignoring auth_provider for testing."""
         self.pushed_manifests = {}
         self.tags = {}
         self.manifests = {}
@@ -80,7 +81,8 @@ def project_env(tmp_path):
     
     # Create config
     config_path = ctx.config_path
-    config_path.write_text("""registry_ref: test.registry.com/repo
+    config_path.write_text("""environment: local
+registry_ref: test.registry.com/repo
 default_tag: latest
 storage:
   policy:
@@ -104,7 +106,7 @@ def service(project_env):
     """Create a BundleService with mock adapter."""
     mock_adapter = MockOrasAdapter()
     deps = BundleDeps(ctx=project_env, adapter=mock_adapter)
-    service = BundleService(deps)
+    service = BundleService(deps=deps)
     
     # We don't need to patch push_apply since we're only testing
     # the service layer operations that don't actually push
@@ -276,7 +278,7 @@ class TestBundleServiceIntegration:
         
         # Create new service instance
         deps2 = BundleDeps(ctx=project_env, adapter=service.deps.adapter)
-        service2 = BundleService(deps2)
+        service2 = BundleService(deps=deps2)
         
         # Tracked files should be preserved
         tracked = service2.tracked

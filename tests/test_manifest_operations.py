@@ -51,7 +51,7 @@ class TestManifestOperations:
             monkeypatch.chdir(project_dir)
             ctx = ProjectContext.init()
             
-            config = BundleConfig(registry_ref=registry_ref)
+            config = BundleConfig(environment="local", registry_ref=registry_ref)
             save_config(config)
             
             tracked = TrackedFiles()
@@ -61,7 +61,7 @@ class TestManifestOperations:
         # Push from project1
         monkeypatch.chdir(project1)
         ctx1 = ProjectContext()
-        config1 = BundleConfig(registry_ref=registry_ref)
+        config1 = BundleConfig(environment="local", registry_ref=registry_ref)
         tracked1 = TrackedFiles(files={"file.txt"})
         
         manifest1 = ops_push(config1, tracked1, ctx=ctx1)
@@ -70,7 +70,7 @@ class TestManifestOperations:
         # Push from project2 with same file content
         monkeypatch.chdir(project2)
         ctx2 = ProjectContext()
-        config2 = BundleConfig(registry_ref=registry_ref)
+        config2 = BundleConfig(environment="local", registry_ref=registry_ref)
         tracked2 = TrackedFiles(files={"file.txt"})
         
         # Should update manifest even though file content is same
@@ -106,7 +106,7 @@ class TestManifestOperations:
         monkeypatch.chdir(project_dir)
         ctx = ProjectContext.init()
         
-        config = BundleConfig(registry_ref=registry_ref)
+        config = BundleConfig(environment="local", registry_ref=registry_ref)
         save_config(config)
         
         # First push with both files
@@ -154,7 +154,7 @@ class TestManifestOperations:
         monkeypatch.chdir(project_dir)
         ctx = ProjectContext.init()
         
-        config = BundleConfig(registry_ref=registry_ref)
+        config = BundleConfig(environment="local", registry_ref=registry_ref)
         save_config(config)
         
         # Track and push both files

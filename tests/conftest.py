@@ -5,6 +5,9 @@ import tempfile
 from pathlib import Path
 import pytest
 
+# Enable insecure mode for all tests (localhost registry uses HTTP)
+os.environ["MODELOPS_BUNDLE_INSECURE"] = "true"
+
 from modelops_bundle.context import ProjectContext
 from modelops_bundle.core import BundleConfig, TrackedFiles
 from modelops_bundle.ops import save_config, save_tracked
@@ -17,7 +20,7 @@ def initialized_ctx(tmp_path, monkeypatch):
     ctx = ProjectContext.init()
     
     registry_url = os.environ.get("REGISTRY_URL", "localhost:5555")
-    config = BundleConfig(registry_ref=f"{registry_url}/test")
+    config = BundleConfig(environment="local", registry_ref=f"{registry_url}/test")
     save_config(config, ctx)
     
     return ctx, config

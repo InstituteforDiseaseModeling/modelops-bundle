@@ -23,7 +23,7 @@ class TestAddWithIgnore:
         ctx = ProjectContext.init()
         
         # Initialize bundle
-        config = BundleConfig(registry_ref="test/registry")
+        config = BundleConfig(environment="local", registry_ref="test/registry")
         save_config(config, ctx)
         save_tracked(TrackedFiles(), ctx)
         
@@ -50,7 +50,7 @@ class TestAddWithIgnore:
         ctx = ProjectContext.init()
         
         # Initialize bundle
-        config = BundleConfig(registry_ref="test/registry")
+        config = BundleConfig(environment="local", registry_ref="test/registry")
         save_config(config, ctx)
         save_tracked(TrackedFiles(), ctx)
         
@@ -76,7 +76,7 @@ class TestAddWithIgnore:
         ctx = ProjectContext.init()
         
         # Initialize bundle
-        config = BundleConfig(registry_ref="test/registry")
+        config = BundleConfig(environment="local", registry_ref="test/registry")
         save_config(config, ctx)
         save_tracked(TrackedFiles(), ctx)
         
@@ -112,7 +112,7 @@ temp/
         ctx = ProjectContext.init()
         
         # Initialize bundle
-        config = BundleConfig(registry_ref="test/registry")
+        config = BundleConfig(environment="local", registry_ref="test/registry")
         save_config(config, ctx)
         save_tracked(TrackedFiles(), ctx)
         
@@ -145,7 +145,7 @@ temp/
         ctx = ProjectContext.init()
         
         # Initialize bundle
-        config = BundleConfig(registry_ref="test/registry")
+        config = BundleConfig(environment="local", registry_ref="test/registry")
         save_config(config, ctx)
         save_tracked(TrackedFiles(), ctx)
         
@@ -178,7 +178,7 @@ temp/
         ctx = ProjectContext.init()
         
         # Initialize bundle
-        config = BundleConfig(registry_ref="test/registry")
+        config = BundleConfig(environment="local", registry_ref="test/registry")
         save_config(config, ctx)
         save_tracked(TrackedFiles(), ctx)
         

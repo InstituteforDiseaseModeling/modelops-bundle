@@ -33,7 +33,8 @@ from tests.test_registry_utils import skip_if_no_registry
 # Base mock adapter for tests
 class BaseMockAdapter:
     """Base mock adapter with common methods."""
-    def __init__(self, remote=None):
+    def __init__(self, remote=None, auth_provider=None):
+        """Initialize mock adapter, ignoring auth_provider for testing."""
         self.remote = remote
     def resolve_tag_to_digest(self, ref, tag):
         # Return the actual manifest digest if we have remote state
@@ -101,7 +102,7 @@ class TestPullMirrorSemantics:
         
         # Setup project
         ctx = ProjectContext.init()
-        config = BundleConfig(registry_ref="test/repo")
+        config = BundleConfig(environment="local", registry_ref="test/repo")
         save_config(config)
         
         # Create local files
@@ -156,8 +157,8 @@ class TestPullMirrorSemantics:
         
         # Mock adapter that records what gets pulled
         class MockAdapter(BaseMockAdapter):
-            def __init__(self):
-                super().__init__(remote)
+            def __init__(self, auth_provider=None, registry_ref=None):
+                super().__init__(remote, auth_provider=auth_provider)
                 self.pulled_files = pulled_files  # Track what gets pulled
             def get_remote_state(self, ref, tag):
                 return remote
@@ -209,7 +210,7 @@ class TestPullMirrorSemantics:
         
         # Setup project
         ctx = ProjectContext.init()
-        config = BundleConfig(registry_ref="test/repo")
+        config = BundleConfig(environment="local", registry_ref="test/repo")
         save_config(config)
         
         # Create files that are identical locally and remotely
@@ -260,8 +261,8 @@ class TestPullMirrorSemantics:
         files_pulled = set()
         
         class MockAdapter(BaseMockAdapter):
-            def __init__(self):
-                super().__init__(remote)
+            def __init__(self, auth_provider=None, registry_ref=None):
+                super().__init__(remote, auth_provider=auth_provider)
             def get_remote_state(self, ref, tag):
                 return remote
             
@@ -301,7 +302,7 @@ class TestPullMirrorSemantics:
         
         # Setup project
         ctx = ProjectContext.init()
-        config = BundleConfig(registry_ref="test/repo")
+        config = BundleConfig(environment="local", registry_ref="test/repo")
         save_config(config)
         
         # Start with one tracked file
@@ -343,8 +344,8 @@ class TestPullMirrorSemantics:
         )
         
         class MockAdapter(BaseMockAdapter):
-            def __init__(self):
-                super().__init__(remote)
+            def __init__(self, auth_provider=None, registry_ref=None):
+                super().__init__(remote, auth_provider=auth_provider)
             def get_remote_state(self, ref, tag):
                 return remote
             
@@ -406,7 +407,7 @@ class TestPullMirrorSemantics:
         monkeypatch.chdir(source)
         
         ctx_src = ProjectContext.init()
-        config_src = BundleConfig(registry_ref=registry_ref)
+        config_src = BundleConfig(environment="local", registry_ref=registry_ref)
         save_config(config_src)
         
         # Create diverse file structure
@@ -432,7 +433,7 @@ class TestPullMirrorSemantics:
         monkeypatch.chdir(dest)
         
         ctx_dest = ProjectContext.init()
-        config_dest = BundleConfig(registry_ref=registry_ref)
+        config_dest = BundleConfig(environment="local", registry_ref=registry_ref)
         save_config(config_dest)
         
         tracked_dest = TrackedFiles()

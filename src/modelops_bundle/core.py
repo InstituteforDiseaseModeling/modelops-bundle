@@ -29,15 +29,17 @@ if TYPE_CHECKING:
 
 class BundleConfig(BaseModel):
     """Bundle configuration (stored in .modelops-bundle/config.yaml).
-    
+
     Attributes:
+        environment: Environment name used to initialize (e.g. "local", "dev")
         registry_ref: Registry reference (e.g. localhost:5555/epi_model)
         default_tag: Default tag to use for push/pull operations
         storage: Storage policy for classifying files
         cache_dir: Optional directory for LocalCAS cache (enables deduplication)
         cache_link_mode: Materialization strategy ("auto", "reflink", "hardlink", "copy")
     """
-    
+
+    environment: str  # e.g. "local", "dev", "staging", "prod"
     registry_ref: str  # e.g. localhost:5555/epi_model
     default_tag: str = "latest"
     storage: StoragePolicy = Field(default_factory=StoragePolicy)  # Default: auto mode
@@ -200,18 +202,33 @@ class DiffResult(BaseModel):
     
     def to_pull_preview(self, overwrite: bool = False,
                         resolved_digest: str = "",
-                        original_reference: str = "") -> "PullPreview":
-        """Generate preview with resolved digest for race-free execution."""
+                        original_reference: str = "",
+                        restore_deleted: bool = False) -> "PullPreview":
+        """Generate preview with resolved digest for race-free execution.
+
+        Args:
+            overwrite: If True, overwrite local changes, conflicts, and restore deletions
+            resolved_digest: The resolved digest for the operation
+            original_reference: The original reference (tag) used
+            restore_deleted: If True, restore deleted files (independent of overwrite)
+        """
         conflicts = []
         will_delete_local = []
         will_update_or_add = []
-        
+
         for change in self.changes:
             # Files that would be added or updated from remote
             if change.change_type in (ChangeType.ADDED_REMOTE, ChangeType.MODIFIED_REMOTE):
                 if change.remote:
                     will_update_or_add.append(change.remote)
-                    
+
+            # Files deleted locally that should be restored from remote
+            elif change.change_type == ChangeType.DELETED_LOCAL:
+                if (overwrite or restore_deleted) and change.remote:
+                    # With overwrite OR restore_deleted, restore the deleted file from remote
+                    will_update_or_add.append(change.remote)
+                # Without either flag, deleted files are just noted but not restored
+
             # Files that would be deleted locally (remote deleted them)
             elif change.change_type == ChangeType.DELETED_REMOTE:
                 if overwrite:

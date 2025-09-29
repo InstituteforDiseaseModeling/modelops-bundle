@@ -22,11 +22,20 @@ from .core import (
     TrackedFiles,
 )
 from .oras import OrasAdapter
+from .auth import get_auth_provider
 from .storage import make_blob_store
 from .storage_models import BundleIndex, BundleFileEntry, StorageType
 from .utils import compute_digest, get_iso_timestamp
 from .working_state import TrackedWorkingState
 from .service_types import EnsureLocalResult
+
+
+# ============= Authentication Helpers =============
+
+def _get_auth_provider(config: BundleConfig, ctx: ProjectContext):
+    """Get authentication provider for standalone operations."""
+    # Use local auth module
+    return get_auth_provider(config.registry_ref)
 
 
 # ============= Atomic Write Helpers =============
@@ -188,16 +197,31 @@ def _index_to_remote_state(index: BundleIndex, manifest_digest: str) -> RemoteSt
 # ============= File I/O =============
 
 def load_config(ctx: Optional[ProjectContext] = None) -> BundleConfig:
-    """Load bundle configuration."""
+    """Load bundle configuration and set up credentials from environment."""
     if ctx is None:
         ctx = ProjectContext()
-    
+
     if not ctx.config_path.exists():
         raise FileNotFoundError(f"Configuration not found at {ctx.config_path}")
-    
+
     with ctx.config_path.open() as f:
         data = yaml.safe_load(f)
-    return BundleConfig(**data)
+
+    config = BundleConfig(**data)
+
+    # Load environment to set up credentials if storage is configured
+    if config.environment and config.storage and config.storage.provider:
+        from modelops_contracts import BundleEnvironment
+        try:
+            environment = BundleEnvironment.load(config.environment)
+            if environment.storage:
+                ctx._setup_storage_credentials(environment.storage)
+        except FileNotFoundError:
+            # Environment file might have been deleted, but we can still try
+            # to use environment variables if they're already set
+            pass
+
+    return config
 
 
 def save_config(config: BundleConfig, ctx: Optional[ProjectContext] = None) -> None:
@@ -291,7 +315,8 @@ def push(
     # Optimization: if nothing changed, return existing digest
     if plan.tag_base_digest and not plan.files_to_upload and not plan.deletes:
         # Need to verify manifest would be identical
-        adapter = OrasAdapter()
+        auth_provider = _get_auth_provider(config, ctx)
+        adapter = OrasAdapter(auth_provider=auth_provider, registry_ref=config.registry_ref)
         try:
             remote = adapter.get_remote_state(config.registry_ref, tag or config.default_tag)
             local_manifest = {(f.path, f.digest) for f in plan.manifest_files}
@@ -312,23 +337,25 @@ def pull(
     tracked: TrackedFiles,
     tag: Optional[str] = None,
     overwrite: bool = False,
+    restore_deleted: bool = False,
     ctx: Optional[ProjectContext] = None
 ) -> PullResult:
     """Execute pull operation and return result.
-    
+
     Simple wrapper that uses two-phase pull internally.
     """
     if ctx is None:
         ctx = ProjectContext()
-    
+
     # Phase 1: Generate preview
-    preview = pull_preview(config, tracked, tag, overwrite, ctx)
+    preview = pull_preview(config, tracked, tag, overwrite, restore_deleted, ctx)
     
     # For backwards compatibility, we need to check for local modifications
     # that aren't in the preview's conflicts list
     if not overwrite:
         # Get the diff to check for MODIFIED_LOCAL changes
-        adapter = OrasAdapter()
+        auth_provider = _get_auth_provider(config, ctx)
+        adapter = OrasAdapter(auth_provider=auth_provider, registry_ref=config.registry_ref)
         ref = tag or config.default_tag
         resolved_digest = adapter.resolve_tag_to_digest(config.registry_ref, ref)
         remote = adapter.get_remote_state(config.registry_ref, resolved_digest)
@@ -368,14 +395,16 @@ def pull_preview(
     tracked: TrackedFiles,
     reference: Optional[str] = None,
     overwrite: bool = False,
+    restore_deleted: bool = False,
     ctx: Optional[ProjectContext] = None
 ) -> PullPreview:
     """Phase 1: Generate preview with resolved digest for race-free execution."""
     if ctx is None:
         ctx = ProjectContext()
-    
+
     # CRITICAL: Resolve tag to digest ONCE for consistency
-    adapter = OrasAdapter()
+    auth_provider = _get_auth_provider(config, ctx)
+    adapter = OrasAdapter(auth_provider=auth_provider, registry_ref=config.registry_ref)
     ref = reference or config.default_tag
     resolved_digest = adapter.resolve_tag_to_digest(config.registry_ref, ref)
     
@@ -400,7 +429,7 @@ def pull_preview(
                 untracked_collisions.append(path)
     
     # Generate preview with resolved digest
-    preview = diff.to_pull_preview(overwrite, resolved_digest, ref)
+    preview = diff.to_pull_preview(overwrite, resolved_digest, ref, restore_deleted)
     
     # Add untracked collisions to preview (needed for safety checks)
     if untracked_collisions:
@@ -420,8 +449,9 @@ def pull_apply(
         ctx = ProjectContext()
     
     from .errors import MissingIndexError, BlobProviderMissingError
-    
-    adapter = OrasAdapter()
+
+    auth_provider = _get_auth_provider(config, ctx)
+    adapter = OrasAdapter(auth_provider=auth_provider, registry_ref=config.registry_ref)
     
     # ALWAYS get index (no fallback)
     try:
@@ -527,9 +557,10 @@ def push_plan(
         ctx = ProjectContext()
     
     tag = tag or config.default_tag
-    
+
     # Capture current digest of the tag (if it exists)
-    adapter = OrasAdapter()
+    auth_provider = _get_auth_provider(config, ctx)
+    adapter = OrasAdapter(auth_provider=auth_provider, registry_ref=config.registry_ref)
     tag_base_digest = adapter.get_current_tag_digest(config.registry_ref, tag)
     
     # Create working state with deletion tracking
@@ -565,8 +596,9 @@ def push_apply(
         ctx = ProjectContext()
     
     from .errors import BlobStorageRequiredError, TagMovedError
-    
-    adapter = OrasAdapter()
+
+    auth_provider = _get_auth_provider(config, ctx)
+    adapter = OrasAdapter(auth_provider=auth_provider, registry_ref=config.registry_ref)
     
     # Check if tag has moved since plan was created
     if plan.tag_base_digest:
@@ -616,7 +648,8 @@ def _push_apply_with_index(
     ctx: ProjectContext
 ) -> str:
     """Execute push with BundleIndex and external storage support."""
-    adapter = OrasAdapter()
+    auth_provider = _get_auth_provider(config, ctx)
+    adapter = OrasAdapter(auth_provider=auth_provider, registry_ref=config.registry_ref)
     
     # Build internal storage plan
     storage_plan = _build_storage_plan(plan, config)
@@ -683,7 +716,8 @@ def ensure_local(
     if ctx is None:
         ctx = ProjectContext()
 
-    adapter = OrasAdapter()
+    auth_provider = _get_auth_provider(config, ctx)
+    adapter = OrasAdapter(auth_provider=auth_provider, registry_ref=config.registry_ref)
     
     # Resolve ref -> digest (accept either tag or sha256:...)
     if not ref:

@@ -244,6 +244,26 @@ storage:
 az storage container create --name my-container
 ```
 
+### Testing with Real Azure ACR
+
+To test blob storage with actual Azure Container Registry:
+
+```bash
+# Authenticate with Azure CLI
+az login
+az acr login --name <your-acr>
+
+# Push with blob storage (files >50MB go to ACR's integrated blob)
+modelops-bundle push --registry <your-acr>.azurecr.io/test-model
+
+# The ACR handles blob storage automatically for large layers
+# Check what went where:
+modelops-bundle manifest inspect
+```
+
+**Note**: Local Docker registries (like localhost:5555) don't support Azure blob storage integration.
+Only real ACR instances handle the OCI + blob hybrid storage automatically.
+
 ### Filesystem (Testing)
 
 For local testing without cloud dependencies:

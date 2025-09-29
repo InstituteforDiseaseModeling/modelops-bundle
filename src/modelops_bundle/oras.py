@@ -1,7 +1,7 @@
 """ORAS adapter for OCI registry operations."""
 
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 import hashlib
 import json
 import logging
@@ -10,9 +10,11 @@ import tempfile
 import time
 import warnings
 
-from oras.provider import Registry
+import oras.auth
+import oras.client
 from oras.container import Container
 
+from modelops_contracts import AuthProvider
 from .context import ProjectContext
 from .constants import BUNDLE_VERSION, BUNDLE_INDEX_MEDIA_TYPE
 from .core import FileInfo, RemoteState
@@ -124,19 +126,144 @@ def _atomic_download(write_fn, final_path: Path):
 
 class OrasAdapter:
     """Adapter for ORAS operations using real oras-py."""
-    
-    def __init__(self, insecure: Optional[bool] = None):
+
+    def __init__(
+        self,
+        insecure: Optional[bool] = None,
+        auth_provider: Optional[AuthProvider] = None,
+        registry_ref: Optional[str] = None
+    ):
         """Initialize ORAS Registry client.
-        
+
         Args:
-            insecure: Whether to skip TLS verification. If None, reads from
-                     MODELOPS_BUNDLE_INSECURE env var (default: False)
+            insecure: Whether to skip TLS verification. If None, auto-detects based on registry
+            auth_provider: Optional AuthProvider instance for authentication
+            registry_ref: Optional registry reference to auto-detect localhost
         """
         if insecure is None:
-            # Check environment variable, default to False for HTTPS (cloud registries)
-            insecure = os.environ.get("MODELOPS_BUNDLE_INSECURE", "0") != "0"
-        self.client = Registry(insecure=insecure)
-    
+            # Auto-detect based on registry if provided
+            if registry_ref:
+                registry_host = registry_ref.split('/')[0] if '/' in registry_ref else registry_ref
+                is_localhost = registry_host.startswith('localhost') or registry_host.startswith('127.0.0.1')
+                if is_localhost:
+                    insecure = True  # Automatically enable insecure mode for localhost
+                else:
+                    # Check environment variable for other cases
+                    insecure = os.environ.get("MODELOPS_BUNDLE_INSECURE", "false").lower() in ("true", "1", "yes")
+            else:
+                # No registry ref, check environment variable
+                insecure = os.environ.get("MODELOPS_BUNDLE_INSECURE", "false").lower() in ("true", "1", "yes")
+
+        # If we have an auth provider, get the first token and use ACRRegistry
+        # This assumes the auth provider returns ACR tokens when username is the UUID
+        if auth_provider:
+            # We'll authenticate lazily on first use, but we need to set up the client
+            self.client = None  # Will be set on first auth
+            self.insecure = insecure
+        else:
+            # No auth needed, use regular client
+            self.client = oras.client.OrasClient(insecure=insecure)
+
+        self.auth_provider = auth_provider
+        self._authenticated_registries = set()
+        self._acr_token = None
+
+    def _validate_registry_settings(self, registry_host: str) -> None:
+        """Validate registry settings to prevent localhost vs cloud confusion.
+
+        Args:
+            registry_host: Registry hostname (e.g., "localhost:5555" or "myacr.azurecr.io")
+
+        Raises:
+            RuntimeError: If insecure mode is enabled for cloud registries
+        """
+        is_localhost = registry_host.startswith('localhost') or registry_host.startswith('127.0.0.1')
+        is_cloud_registry = (
+            '.azurecr.io' in registry_host or
+            '.gcr.io' in registry_host or
+            'public.ecr.aws' in registry_host or
+            'registry.hub.docker.com' in registry_host
+        )
+
+        if is_cloud_registry and self.insecure:
+            raise RuntimeError(
+                f"🚨 CONFIGURATION ERROR: Insecure mode is enabled for cloud registry '{registry_host}'\n"
+                f"   This will cause HTTP (not HTTPS) connections and authentication failures.\n"
+                f"   \n"
+                f"   SOLUTION: Run 'unset MODELOPS_BUNDLE_INSECURE' or set it to 'false'\n"
+                f"   \n"
+                f"   💡 Insecure mode should only be used for local registries like localhost:5555"
+            )
+
+        if is_localhost and not self.insecure:
+            print(f"⚠️  WARNING: Connecting to localhost registry '{registry_host}' in secure mode.")
+            print(f"   If you get connection errors, you may need: MODELOPS_BUNDLE_INSECURE=true")
+
+    def _ensure_client(self) -> None:
+        """Ensure we have a client instance.
+
+        This is needed because we may initialize lazily when auth_provider is set.
+        """
+        if self.client is None:
+            # Create a default client if we haven't authenticated yet
+            self.client = oras.client.OrasClient(insecure=self.insecure)
+
+    def _ensure_authenticated(self, registry_ref: str) -> None:
+        """Ensure we're authenticated to the registry if needed.
+
+        For ACR registries, this creates an ACRRegistry instance with the token.
+
+        Args:
+            registry_ref: Registry reference (e.g., "myregistry.azurecr.io/repo")
+        """
+        if not self.auth_provider:
+            return
+
+        # Extract registry hostname
+        registry_host = registry_ref.split('/')[0]
+
+        # SAFETY CHECK: Detect localhost vs cloud registry conflicts
+        self._validate_registry_settings(registry_host)
+
+        # Skip if already authenticated to this registry
+        if registry_host in self._authenticated_registries:
+            return
+
+        try:
+            # Get credentials from auth provider
+            credential = self.auth_provider.get_registry_credential(registry_ref)
+            username = credential.username
+            password_or_token = credential.secret
+
+            logger = logging.getLogger(__name__)
+            logger.debug(f"Authenticating to registry: {registry_host}")
+
+            # Create OrasClient if needed
+            if self.client is None:
+                logger.debug(f"Creating OrasClient for {registry_host}")
+                self.client = oras.client.OrasClient(insecure=self.insecure)
+
+            # For ACR, we now have an access token (not refresh token)
+            # Use bearer token auth for ACR access tokens
+            if username == "00000000-0000-0000-0000-000000000000":
+                # Use token auth for ACR with access token
+                self.client.auth.set_token_auth(password_or_token)
+                self._acr_token = password_or_token
+                logger.debug(f"Using ACR token authentication for {registry_host}")
+            else:
+                # Use regular basic auth
+                self.client.auth.set_basic_auth(username, password_or_token)
+                logger.debug(f"Using basic authentication for {registry_host}")
+
+            # Mark as authenticated
+            self._authenticated_registries.add(registry_host)
+            logger.debug(f"Successfully authenticated to {registry_host}")
+
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to authenticate to {registry_host}: {e}")
+            # Don't fail completely - let the request try anyway
+            # (it might work with anonymous access)
     def _build_target(self, registry_ref: str, reference: str) -> str:
         """Build full target reference (works with tags or digests)."""
         if reference.startswith("sha256:"):
@@ -148,14 +275,15 @@ class OrasAdapter:
     
     def _try_head_for_digest(self, container: Container) -> Optional[str]:
         """Try to get digest via HEAD request (faster, fewer bytes).
-        
+
         Returns digest string if found, None otherwise.
         """
+        self._ensure_client()  # Make sure we have a client
         try:
             head_url = f"{self.client.prefix}://{container.manifest_url()}"
             resp = self.client.do_request(
                 head_url,
-                "HEAD", 
+                "HEAD",
                 headers={"Accept": OCI_ACCEPT},
             )
             
@@ -170,9 +298,10 @@ class OrasAdapter:
         self, registry_ref: str, reference: str = "latest"
     ) -> str:
         """Get just the digest for a manifest (optimized with HEAD first).
-        
+
         Useful when you only need the digest, not the full manifest.
         """
+        self._ensure_authenticated(registry_ref)
         target = self._build_target(registry_ref, reference)
         container = Container(target)
         
@@ -205,18 +334,21 @@ class OrasAdapter:
     ) -> Tuple[dict, str, bytes]:
         """
         Return (manifest_json, canonical_digest, raw_bytes).
-        
+
         Reference can be a tag (e.g., "latest") or digest (e.g., "sha256:...").
         Digest comes from Docker-Content-Digest header when available;
         otherwise it is computed from the exact raw bytes.
         Includes retry logic for eventual consistency after push.
         """
+        # Ensure authenticated before registry operations
+        self._ensure_authenticated(registry_ref)
+
         target = self._build_target(registry_ref, reference)
         container = Container(target)
-        
+
         # Build the manifest URL path
         get_manifest_url = f"{self.client.prefix}://{container.manifest_url()}"
-        
+
         last_error = None
         for attempt in range(retries):
             try:
@@ -242,7 +374,22 @@ class OrasAdapter:
                     resp.raise_for_status()
                 
                 raw = resp.content or b""
-                manifest = resp.json() if raw else {}
+
+                # Parse JSON response safely
+                if raw:
+                    try:
+                        manifest = resp.json()
+                    except json.JSONDecodeError:
+                        # Handle non-JSON responses (e.g., HTML error pages)
+                        content_type = resp.headers.get('content-type', 'unknown')
+                        if resp.status_code in (401, 403):
+                            raise AuthError(f"Authentication failed for {target}")
+                        raise NetworkError(
+                            f"Registry returned invalid response for {target}: "
+                            f"expected JSON but got {content_type}"
+                        )
+                else:
+                    manifest = {}
                 
                 # Check if this is an index/manifest list
                 media_type = manifest.get("mediaType", "")
@@ -305,6 +452,7 @@ class OrasAdapter:
         reference: str = "latest"  # Can be tag or digest
     ) -> dict:
         """Get manifest from registry."""
+        self._ensure_authenticated(registry_ref)
         manifest, _, _ = self.get_manifest_with_digest(registry_ref, reference)
         return manifest
     
@@ -314,6 +462,7 @@ class OrasAdapter:
         reference: str = "latest"  # Can be tag or digest
     ) -> RemoteState:
         """Get remote state from BundleIndex (always required)."""
+        self._ensure_authenticated(registry_ref)
         # First resolve to digest
         manifest, manifest_digest, _ = self.get_manifest_with_digest(registry_ref, reference)
         
@@ -349,12 +498,85 @@ class OrasAdapter:
         registry_ref: str
     ) -> List[str]:
         """List all tags for a repository.
-        
+
         Returns list of tag names.
         """
+        self._ensure_authenticated(registry_ref)
         # The oras-py Registry client has a get_tags method
         tags = self.client.get_tags(registry_ref)
         return list(tags) if tags else []
+
+    def list_all_manifests(
+        self,
+        registry_ref: str
+    ) -> List[Dict[str, Any]]:
+        """List all manifests in a repository with metadata.
+
+        Returns list of manifest info dicts with:
+        - digest: manifest digest (sha256:...)
+        - created: ISO timestamp from annotations
+        - tags: list of tags pointing to this manifest
+        - size: total size of all files
+        - file_count: number of files
+        """
+        self._ensure_authenticated(registry_ref)
+
+        # Get all tags first
+        tags = self.list_tags(registry_ref)
+
+        # Build map of digest -> manifest info
+        manifest_map = {}
+
+        # Process each tag to get its manifest
+        for tag in tags:
+            try:
+                manifest, manifest_digest, _ = self.get_manifest_with_digest(registry_ref, tag)
+
+                if manifest_digest not in manifest_map:
+                    # Extract metadata from manifest
+                    created = None
+                    if manifest.get("annotations"):
+                        created = manifest["annotations"].get("org.opencontainers.image.created")
+
+                    # Calculate size and file count from layers
+                    total_size = 0
+                    file_count = 0
+                    if manifest.get("layers"):
+                        for layer in manifest["layers"]:
+                            if layer.get("size"):
+                                total_size += layer["size"]
+                            file_count += 1
+
+                    manifest_map[manifest_digest] = {
+                        "digest": manifest_digest,
+                        "created": created,
+                        "tags": [],
+                        "size": total_size,
+                        "file_count": file_count,
+                        "manifest": manifest
+                    }
+
+                # Add this tag to the manifest
+                manifest_map[manifest_digest]["tags"].append(tag)
+
+            except Exception:
+                # Skip tags that can't be resolved
+                continue
+
+        # Convert to list and sort by creation date (newest first)
+        manifests = list(manifest_map.values())
+
+        # Sort by creation date (newest first), with fallback to digest for stable ordering
+        def sort_key(m):
+            if m["created"]:
+                return (m["created"], m["digest"])
+            else:
+                # No creation date - put at end, sorted by digest
+                return ("9999-12-31T23:59:59Z", m["digest"])
+
+        manifests.sort(key=sort_key, reverse=True)
+
+        return manifests
     
     # ============= NEW INDEX-BASED METHODS =============
     
@@ -368,20 +590,23 @@ class OrasAdapter:
     ) -> str:
         """
         Push files with BundleIndex as manifest config.
-        
-        The index is the sole source of truth, but we also preserve paths in layer 
+
+        The index is the sole source of truth, but we also preserve paths in layer
         annotations for backward compatibility with get_remote_state.
-        
+
         Args:
             registry_ref: Registry reference (e.g., localhost:5000/myrepo)
             tag: Tag to push to
             oci_file_paths: List of (absolute_path, relative_path) tuples for OCI layers
             index: BundleIndex to store as manifest config
             manifest_annotations: Optional manifest annotations
-            
+
         Returns:
             Canonical digest of pushed manifest
         """
+        # Ensure authenticated before registry operations
+        self._ensure_authenticated(registry_ref)
+
         target = self._build_target(registry_ref, tag)
         
         # Serialize index using deterministic JSON
@@ -419,6 +644,7 @@ class OrasAdapter:
                 "files": files_to_push,
                 "manifest_config": f"{tmp_path}:{BUNDLE_INDEX_MEDIA_TYPE}",
                 "manifest_annotations": manifest_annotations or {},
+                "disable_path_validation": True,  # Allow temp directory paths
             }
             
             # Add annotation file if we have OCI files (for backward compat)
@@ -445,17 +671,18 @@ class OrasAdapter:
     def get_index(self, registry_ref: str, digest: str) -> BundleIndex:
         """
         Get BundleIndex from manifest config (always by digest, never by tag).
-        
+
         Args:
             registry_ref: Registry reference
             digest: Manifest digest (sha256:...)
-            
+
         Returns:
             BundleIndex from manifest config
-            
+
         Raises:
             MissingIndexError: If artifact is missing required BundleIndex config
         """
+        self._ensure_authenticated(registry_ref)
         target = self._build_target(registry_ref, digest)
         container = Container(target)
         
@@ -501,10 +728,10 @@ class OrasAdapter:
     ) -> None:
         """
         Pull selected files to output directory with digest verification.
-        
+
         Uses atomic downloads and path safety checks to ensure reliability
         and security. Can optionally use LocalCAS to avoid re-downloads.
-        
+
         Args:
             registry_ref: Registry reference
             digest: Manifest digest to pull from
@@ -513,13 +740,14 @@ class OrasAdapter:
             blob_store: BlobStore instance (required if any BLOB entries)
             cas: Optional LocalCAS instance for caching
             link_mode: Materialization mode when using CAS ("auto", "reflink", "hardlink", "copy")
-            
+
         Raises:
             DigestMismatchError: If any file fails digest verification
             ValueError: If path is unsafe
         """
         from .errors import BlobProviderMissingError
-        
+
+        self._ensure_authenticated(registry_ref)
         target = self._build_target(registry_ref, digest)
         container = Container(target)
         

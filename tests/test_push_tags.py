@@ -41,7 +41,7 @@ def mock_context(tmp_path):
 @pytest.fixture
 def mock_config():
     """Create a mock bundle config."""
-    return BundleConfig(
+    return BundleConfig(environment="local", 
         registry_ref="localhost:5555/test",
         default_tag="latest",
         artifact_type="application/vnd.test"

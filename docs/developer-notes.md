@@ -26,6 +26,27 @@ oras manifest fetch --plain-http localhost:5555/epi_model:v1 | \
 oras pull --plain-http localhost:5555/epi_model:v1
 ```
 
+## Local Registry and SSL/TLS
+
+The local Docker registry runs on HTTP (port 5555), not HTTPS. To use it:
+
+```bash
+# Enable insecure mode for local testing
+export MODELOPS_BUNDLE_INSECURE=true
+
+# This allows HTTP connections to localhost:5555
+# Values "true", "1", or "yes" enable insecure mode
+# Any other value (including unset) requires HTTPS
+
+# For tests:
+MODELOPS_BUNDLE_INSECURE=true pytest
+
+# Or add to your shell profile for development:
+echo 'export MODELOPS_BUNDLE_INSECURE=true' >> ~/.bashrc
+```
+
+**Security Note**: This only affects TLS verification, not authentication. Never use in production.
+
 ## ORAS/OCI Artifact Layers
 
 ORAS layers ≠ Docker layers:
@@ -149,3 +170,304 @@ manifest["annotations"] = manifest_annotations  # Separate, manifest-level only
 
 **Recommendation**: Annotation file (Option 1) - only solution that properly
 fixes the layer title issue. Temp file management is simple with context managers.
+
+## Development Environment Setup
+
+### Registry Configuration Hierarchy
+
+The `REGISTRY_URL` and related environment variables follow this precedence:
+
+1. **Command-line flags**: `--registry` or `--env` override everything
+2. **Environment variables**: `REGISTRY_URL`, `MODELOPS_ENV`
+3. **ModelOps environment configs**: `~/.modelops/environments/<env>.yaml`
+4. **Auto-detection**: Local Docker containers or first available environment
+
+### Local Development Setup
+
+**Option 1: Docker Compose (Recommended)**
+```bash
+# From modelops-bundle root directory
+make start
+# or: docker-compose -f dev/docker-compose.yml up -d
+
+# Check status
+make status
+
+# Services available:
+# - OCI Registry: http://localhost:5555
+# - Registry UI: http://localhost:8080
+# - Azure Storage: http://localhost:10000 (Azurite)
+
+# Required for HTTP registry:
+export MODELOPS_BUNDLE_INSECURE=true
+
+# Test the setup
+mops-bundle init test-project
+mops-bundle add src/
+mops-bundle push
+
+# Clean up
+make stop
+```
+
+**Option 2: Manual Docker Registry**
+```bash
+# Minimal setup - just the registry
+docker run -d -p 5555:5000 --name test-registry registry:2
+
+# Set environment
+export REGISTRY_URL=localhost:5555
+export MODELOPS_BUNDLE_INSECURE=true
+
+# Test
+mops-bundle push
+
+# Clean up
+docker stop test-registry && docker rm test-registry
+```
+
+### Production/Cloud Setup
+
+**Who sets REGISTRY_URL in production:**
+- **Infrastructure provisioning**: `mops infra up` creates `~/.modelops/environments/<env>.yaml`
+- **Environment discovery**: `mops-bundle` reads these configs automatically
+- **Manual override**: Use `--env dev` or `export MODELOPS_ENV=dev`
+
+**Environment config example (`~/.modelops/environments/dev.yaml`):**
+```yaml
+registry:
+  url: modelopsdevacrvsb.azurecr.io
+  auth_provider: azure_cli
+storage:
+  connection_string: DefaultEndpointsProtocol=https;...
+```
+
+**Testing against Azure ACR:**
+```bash
+# Ensure Azure CLI is logged in
+az login
+az acr login --name modelopsdevacrvsb
+
+# Don't set MODELOPS_BUNDLE_INSECURE (uses HTTPS)
+unset MODELOPS_BUNDLE_INSECURE
+
+# Test with real ACR
+cd dev/sample_projects/epi_model
+mops-bundle push
+```
+
+## Testing Guide
+
+### Test Categories
+
+**Unit Tests (No Registry Required)**
+```bash
+# Fast tests that don't need external services
+uv run pytest -m "not integration" -v
+
+# These tests skip cleanly when no registry available
+# Should complete in under 30 seconds
+```
+
+**Integration Tests (Registry Required)**
+```bash
+# Start local registry first
+make start
+
+# Run integration tests
+export REGISTRY_URL=localhost:5555
+export MODELOPS_BUNDLE_INSECURE=true
+uv run pytest -m integration -v
+
+# Or run all tests (unit + integration)
+uv run pytest -v
+```
+
+**E2E Testing with Sample Projects**
+```bash
+# Built-in E2E test
+make test
+
+# Manual E2E with sample projects
+cd dev/sample_projects/epi_model
+mops-bundle push
+mops-bundle status
+mops-bundle pull ../test-pull
+```
+
+### CI Testing
+
+**GitHub Actions setup:**
+- Starts Docker registry: `docker run -d -p 5555:5000 registry:2`
+- Runs unit tests: `pytest -m "not integration"`
+- Runs integration tests: `pytest -m integration` (with registry available)
+- Tests both local and cloud registry scenarios
+
+**Reproduce CI locally:**
+```bash
+# Exactly like CI
+docker run -d -p 5555:5000 --name test-registry registry:2
+export REGISTRY_URL=localhost:5555
+export MODELOPS_BUNDLE_INSECURE=true
+uv run pytest -m integration -v
+docker stop test-registry && docker rm test-registry
+```
+
+## Troubleshooting Common Issues
+
+### Registry Connection Problems
+
+**Error: "Error accessing registry at ..."**
+1. **Check registry availability:**
+   ```bash
+   curl -f http://localhost:5555/v2/
+   # Should return: {}
+   ```
+
+2. **Check MODELOPS_BUNDLE_INSECURE setting:**
+   ```bash
+   echo $MODELOPS_BUNDLE_INSECURE
+   # Should be "true" for localhost:5555
+   # Should be unset for cloud registries
+   ```
+
+3. **Check REGISTRY_URL:**
+   ```bash
+   echo $REGISTRY_URL
+   # Should match your intended registry
+   ```
+
+**Error: "HTTP 401 Unauthorized" (Azure ACR)**
+```bash
+# Re-authenticate with Azure
+az login
+az acr login --name <registry-name>
+
+# Verify authentication
+az acr repository list --name <registry-name>
+```
+
+**Error: "HTTP vs HTTPS issues"**
+- **localhost:5555**: MUST use `MODELOPS_BUNDLE_INSECURE=true`
+- **Azure ACR**: MUST NOT use `MODELOPS_BUNDLE_INSECURE=true`
+- **Cloud registries**: Always use HTTPS (secure mode)
+
+### Environment Configuration Issues
+
+**Problem: Wrong registry being used**
+1. **Check environment precedence:**
+   ```bash
+   # See what environment is being used
+   mops-bundle config
+
+   # Override explicitly
+   mops-bundle --env local push
+   mops-bundle --registry localhost:5555/project push
+   ```
+
+2. **Check environment files:**
+   ```bash
+   ls ~/.modelops/environments/
+   cat ~/.modelops/environments/dev.yaml
+   ```
+
+3. **Force local development mode:**
+   ```bash
+   # Start Docker services
+   make start
+
+   # Unset conflicting variables
+   unset REGISTRY_URL
+   unset MODELOPS_ENV
+
+   # Should auto-detect local environment
+   mops-bundle init test
+   ```
+
+**Problem: Tests hanging or timing out**
+- **Unit tests hanging**: Check if they're accidentally marked as integration tests
+- **Integration tests hanging**: Check if registry is actually running
+- **DNS/network timeouts**: Don't use fake domains like `fake-registry.invalid`
+
+### Local vs Cloud Registry Confusion
+
+**Safe local development pattern:**
+```bash
+# Start local services
+make start
+
+# Set up environment clearly
+export MODELOPS_BUNDLE_INSECURE=true
+export REGISTRY_URL=localhost:5555
+
+# Verify setup
+curl -f http://localhost:5555/v2/
+mops-bundle push
+
+# When switching to cloud:
+unset MODELOPS_BUNDLE_INSECURE
+unset REGISTRY_URL
+az acr login --name <registry>
+mops-bundle push
+```
+
+**Safe cloud testing pattern:**
+```bash
+# Clean environment
+unset MODELOPS_BUNDLE_INSECURE
+unset REGISTRY_URL
+
+# Authenticate
+az login
+az acr login --name modelopsdevacrvsb
+
+# Test
+cd dev/sample_projects/epi_model
+mops-bundle push
+```
+
+## Environment Variable Reference
+
+| Variable | Purpose | Values | Notes |
+|----------|---------|--------|-------|
+| `REGISTRY_URL` | Override registry discovery | `localhost:5555`, `registry.azurecr.io` | Takes precedence over environment configs |
+| `MODELOPS_BUNDLE_INSECURE` | Enable HTTP (not HTTPS) | `true`, `1`, `yes` | **Only for localhost registries** |
+| `MODELOPS_ENV` | Choose environment config | `local`, `dev`, `prod` | Reads `~/.modelops/environments/<env>.yaml` |
+| `DEBUG` | Verbose error output | `1` | Shows full error traces |
+
+## Development Workflow Summary
+
+**Daily Development:**
+```bash
+# Start local services once
+make start
+
+# Set environment once per shell session
+export MODELOPS_BUNDLE_INSECURE=true
+
+# Normal workflow
+mops-bundle init my-project
+mops-bundle add src/
+mops-bundle push
+mops-bundle status
+```
+
+**Testing:**
+```bash
+# Unit tests (no registry)
+uv run pytest -m "not integration"
+
+# Integration tests (with registry)
+make start
+uv run pytest -m integration
+
+# Clean up
+make stop
+```
+
+**Production deployment:**
+```bash
+# Environment auto-configured by mops infra up
+unset MODELOPS_BUNDLE_INSECURE
+mops-bundle push  # Uses Azure ACR automatically
+```

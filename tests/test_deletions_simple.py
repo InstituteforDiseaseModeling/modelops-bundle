@@ -41,7 +41,7 @@ class TestPullDeletions:
         ctx = ProjectContext.init()
         
         # Setup: Create config and tracked files
-        config = BundleConfig(registry_ref="test/registry")
+        config = BundleConfig(environment="local", registry_ref="test/registry")
         save_config(config, ctx)
         
         tracked = TrackedFiles()
@@ -111,7 +111,7 @@ class TestPullDeletions:
         ctx = ProjectContext.init()
         
         # Setup
-        config = BundleConfig(registry_ref="test/registry")
+        config = BundleConfig(environment="local", registry_ref="test/registry")
         save_config(config, ctx)
         
         tracked = TrackedFiles()

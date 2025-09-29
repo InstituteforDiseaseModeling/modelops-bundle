@@ -336,3 +336,226 @@ class TestTrackedWorkingState:
         assert "remaining.txt" in sync_state.last_synced_files
         assert "deleted.txt" not in sync_state.last_synced_files
         assert sync_state.last_push_digest == "sha256:new_manifest"
+
+
+class TestRestoreDeletedParameter:
+    """Test the restore_deleted parameter in to_pull_preview."""
+
+    def test_deleted_local_with_restore_flag(self, tmp_path):
+        """Test DELETED_LOCAL change type with restore_deleted=True."""
+        # Setup: file exists remotely but is missing locally
+        remote = RemoteState(
+            manifest_digest="sha256:remote123",
+            files={
+                "deleted.txt": FileInfo(
+                    path="deleted.txt",
+                    digest="sha256:content",
+                    size=100
+                )
+            }
+        )
+
+        # Local snapshot has no files
+        local = TrackedFilesSnapshot(files={})
+
+        # Last sync shows the file was previously synced
+        last_sync = SyncState(
+            last_synced_files={"deleted.txt": "sha256:content"}
+        )
+
+        # Compute diff with file marked as missing
+        diff_result = compute_diff(
+            local=local,
+            remote=remote,
+            last_sync=last_sync,
+            missing_local={"deleted.txt"}
+        )
+
+        # Create preview with restore_deleted=True
+        preview = diff_result.to_pull_preview(
+            overwrite=False,
+            restore_deleted=True
+        )
+
+        # File should be restored
+        assert len(preview.will_update_or_add) == 1
+        assert preview.will_update_or_add[0].path == "deleted.txt"
+
+    def test_deleted_local_without_restore_flag(self, tmp_path):
+        """Test DELETED_LOCAL change type with restore_deleted=False."""
+        # Same setup as above
+        remote = RemoteState(
+            manifest_digest="sha256:remote123",
+            files={
+                "deleted.txt": FileInfo(
+                    path="deleted.txt",
+                    digest="sha256:content",
+                    size=100
+                )
+            }
+        )
+
+        local = TrackedFilesSnapshot(files={})
+        last_sync = SyncState(
+            last_synced_files={"deleted.txt": "sha256:content"}
+        )
+
+        diff_result = compute_diff(
+            local=local,
+            remote=remote,
+            last_sync=last_sync,
+            missing_local={"deleted.txt"}
+        )
+
+        # Create preview with restore_deleted=False
+        preview = diff_result.to_pull_preview(
+            overwrite=False,
+            restore_deleted=False
+        )
+
+        # File should NOT be restored
+        assert len(preview.will_update_or_add) == 0
+
+    def test_restore_deleted_with_modified_files(self, tmp_path):
+        """Test that restore_deleted doesn't affect modified files."""
+        # Setup: one file deleted, one modified locally
+        test_file = tmp_path / "modified.txt"
+        test_file.write_text("local changes")
+
+        local = TrackedFilesSnapshot(
+            files={
+                "modified.txt": FileInfo(
+                    path="modified.txt",
+                    digest=compute_digest(test_file),
+                    size=len("local changes")
+                )
+            }
+        )
+
+        remote = RemoteState(
+            manifest_digest="sha256:remote123",
+            files={
+                "deleted.txt": FileInfo(
+                    path="deleted.txt",
+                    digest="sha256:deleted_content",
+                    size=50
+                ),
+                "modified.txt": FileInfo(
+                    path="modified.txt",
+                    digest="sha256:original_content",
+                    size=100
+                )
+            }
+        )
+
+        last_sync = SyncState(
+            last_synced_files={
+                "deleted.txt": "sha256:deleted_content",
+                "modified.txt": "sha256:original_content"
+            }
+        )
+
+        diff_result = compute_diff(
+            local=local,
+            remote=remote,
+            last_sync=last_sync,
+            missing_local={"deleted.txt"}
+        )
+
+        # Create preview with restore_deleted=True but overwrite=False
+        preview = diff_result.to_pull_preview(
+            overwrite=False,
+            restore_deleted=True
+        )
+
+        # Only deleted file should be restored, modified file untouched
+        assert len(preview.will_update_or_add) == 1
+        assert preview.will_update_or_add[0].path == "deleted.txt"
+
+        # Modified file should not be in the update list
+        for file_info in preview.will_update_or_add:
+            assert file_info.path != "modified.txt"
+
+    def test_overwrite_implies_restore(self, tmp_path):
+        """Test that overwrite=True restores deleted files even if restore_deleted=False."""
+        remote = RemoteState(
+            manifest_digest="sha256:remote123",
+            files={
+                "deleted.txt": FileInfo(
+                    path="deleted.txt",
+                    digest="sha256:content",
+                    size=100
+                )
+            }
+        )
+
+        local = TrackedFilesSnapshot(files={})
+        last_sync = SyncState(
+            last_synced_files={"deleted.txt": "sha256:content"}
+        )
+
+        diff_result = compute_diff(
+            local=local,
+            remote=remote,
+            last_sync=last_sync,
+            missing_local={"deleted.txt"}
+        )
+
+        # Create preview with overwrite=True but restore_deleted=False
+        preview = diff_result.to_pull_preview(
+            overwrite=True,
+            restore_deleted=False
+        )
+
+        # File should still be restored because overwrite=True
+        assert len(preview.will_update_or_add) == 1
+        assert preview.will_update_or_add[0].path == "deleted.txt"
+
+    def test_multiple_deletions_with_restore_flag(self, tmp_path):
+        """Test restoring multiple deleted files."""
+        remote = RemoteState(
+            manifest_digest="sha256:remote123",
+            files={
+                "file1.txt": FileInfo(path="file1.txt", digest="sha256:1", size=10),
+                "file2.txt": FileInfo(path="file2.txt", digest="sha256:2", size=20),
+                "file3.txt": FileInfo(path="file3.txt", digest="sha256:3", size=30),
+            }
+        )
+
+        # All files are missing locally
+        local = TrackedFilesSnapshot(files={})
+
+        last_sync = SyncState(
+            last_synced_files={
+                "file1.txt": "sha256:1",
+                "file2.txt": "sha256:2",
+                "file3.txt": "sha256:3",
+            }
+        )
+
+        diff_result = compute_diff(
+            local=local,
+            remote=remote,
+            last_sync=last_sync,
+            missing_local={"file1.txt", "file2.txt", "file3.txt"}
+        )
+
+        # Test with restore_deleted=True
+        preview = diff_result.to_pull_preview(
+            overwrite=False,
+            restore_deleted=True
+        )
+
+        # All deleted files should be restored
+        assert len(preview.will_update_or_add) == 3
+        restored_paths = {f.path for f in preview.will_update_or_add}
+        assert restored_paths == {"file1.txt", "file2.txt", "file3.txt"}
+
+        # Test with restore_deleted=False
+        preview_no_restore = diff_result.to_pull_preview(
+            overwrite=False,
+            restore_deleted=False
+        )
+
+        # No files should be restored
+        assert len(preview_no_restore.will_update_or_add) == 0

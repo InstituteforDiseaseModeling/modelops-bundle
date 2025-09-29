@@ -141,7 +141,7 @@ class TestAtomicStateWrites:
         ctx = ProjectContext.init()
         # Use the actual config_path from context
         
-        config = BundleConfig(
+        config = BundleConfig(environment="local", 
             registry_ref="localhost:5000/test",
             default_tag="v1.0"
         )
