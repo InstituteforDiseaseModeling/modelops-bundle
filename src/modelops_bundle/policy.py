@@ -56,7 +56,6 @@ class StoragePolicy(BaseModel):
             should_warn is True when file would go to blob but no provider configured
         """
         p = path.as_posix()
-        should_warn = False
         
         # Mode overrides everything
         if self.mode == "oci-only":
@@ -77,7 +76,6 @@ class StoragePolicy(BaseModel):
             if fnmatch.fnmatch(p, pattern):
                 if not self.provider:
                     # Would use blob but can't - fall back to OCI with warning
-                    should_warn = True
                     return StorageType.OCI, True
                 return StorageType.BLOB, False
         
@@ -85,7 +83,6 @@ class StoragePolicy(BaseModel):
         if size >= self.threshold_bytes:
             if not self.provider:
                 # Large file but no blob storage - warn
-                should_warn = True
                 return StorageType.OCI, True
             return StorageType.BLOB, False
         

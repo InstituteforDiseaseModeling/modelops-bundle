@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch, MagicMock
 from modelops_bundle.core import BundleConfig
 from modelops_bundle.context import ProjectContext
 from modelops_bundle.ops import ensure_local, _scan_extras
-from modelops_bundle.service_types import EnsureLocalResult
+from modelops_bundle.ops import EnsureLocalResult
 from modelops_bundle.storage_models import BundleIndex, BundleFileEntry, StorageType
 from modelops_bundle.oras import OrasAdapter
 

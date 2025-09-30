@@ -9,6 +9,8 @@ import tempfile
 import time
 import yaml
 
+from pydantic import BaseModel
+
 from .context import ProjectContext
 
 from .core import (
@@ -24,10 +26,9 @@ from .core import (
 from .oras import OrasAdapter
 from .auth import get_auth_provider
 from .storage import make_blob_store
-from .storage_models import BundleIndex, BundleFileEntry, StorageType
-from .utils import compute_digest, get_iso_timestamp
+from .storage_models import BundleIndex, BundleFileEntry, StorageType, BlobReference
+from .utils import get_iso_timestamp
 from .working_state import TrackedWorkingState
-from .service_types import EnsureLocalResult
 
 
 # ============= Authentication Helpers =============
@@ -712,6 +713,17 @@ def _push_apply_with_index(
     return manifest_digest
 
 
+# ============= Result Types =============
+
+class EnsureLocalResult(BaseModel):
+    """Result of ensure_local operation."""
+    resolved_digest: str
+    downloaded: int
+    deleted: int
+    bytes_downloaded: int
+    dry_run: bool = False
+
+
 # ============= Standalone Operations =============
 
 def ensure_local(
@@ -837,4 +849,80 @@ def _scan_extras(dest: Path, expected_rel_paths: set[str]) -> List[str]:
             if rel not in expected_rel_paths:
                 extras.append(rel)
     return extras
+
+
+# ============= Initialization =============
+
+def initialize_bundle(
+    project_name: str,
+    env_name: str = "dev",
+    tag: str = "latest",
+    threshold_mb: int = 50,
+) -> BundleConfig:
+    """Initialize a bundle configuration from an environment.
+
+    Args:
+        project_name: Name of the project/model
+        env_name: Environment to load from ~/.modelops/bundle-env/
+        tag: Default tag for the bundle
+        threshold_mb: Size threshold in MB for blob storage
+
+    Returns:
+        BundleConfig ready to be saved (no environment field)
+
+    Raises:
+        ValueError: If environment doesn't exist or is invalid
+    """
+    from modelops_contracts import BundleEnvironment
+    from .policy import StoragePolicy
+
+    # Load environment configuration
+    try:
+        environment = BundleEnvironment.load(env_name)
+    except FileNotFoundError:
+        raise ValueError(
+            f"Environment '{env_name}' not found. "
+            f"Available environments are in ~/.modelops/bundle-env/\n"
+            f"Run 'make start' to set up local environment, or "
+            f"'mops infra up' to set up cloud environment."
+        )
+
+    # Extract registry from environment
+    if not environment.registry:
+        raise ValueError(f"Environment '{env_name}' has no registry configured")
+
+    registry = environment.registry.login_server
+
+    # Build full registry reference with project name
+    if "/" not in registry or registry.endswith("/"):
+        registry_ref = f"{registry.rstrip('/')}/{project_name}"
+    else:
+        # Registry already includes project/repo, use as-is
+        registry_ref = registry
+
+    # Configure storage from environment
+    if environment.storage:
+        storage_policy = StoragePolicy(
+            provider=environment.storage.provider,
+            container=environment.storage.container,
+            prefix="",
+            threshold_bytes=threshold_mb * 1024 * 1024,
+            mode="auto"
+        )
+    else:
+        # OCI-only mode (no external storage)
+        storage_policy = StoragePolicy(
+            provider="",
+            container="",
+            prefix="",
+            threshold_bytes=threshold_mb * 1024 * 1024,
+            mode="oci-inline"  # Force all to OCI
+        )
+
+    # Return config WITHOUT environment field
+    return BundleConfig(
+        registry_ref=registry_ref,
+        default_tag=tag,
+        storage=storage_policy
+    )
 

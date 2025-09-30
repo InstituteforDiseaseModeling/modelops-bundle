@@ -2,10 +2,13 @@
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, TYPE_CHECKING
 
 import typer
 from rich.console import Console
+
+if TYPE_CHECKING:
+    from modelops_contracts import BundleRegistry
 from rich.table import Table
 from .context import ProjectContext
 from .core import (
@@ -29,7 +32,6 @@ from .oras import OrasAdapter
 from .working_state import TrackedWorkingState
 from .core import RemoteStatus, RemoteState
 from .errors import MissingIndexError, NetworkError, AuthError, NotFoundError, UnsupportedArtifactError, TagMovedError
-from .manifest import build_manifest, load_manifest
 from .env_manager import load_env_for_command
 
 
@@ -84,16 +86,16 @@ def _validate_environment_for_registry(registry_ref: str) -> None:
     is_insecure = insecure_env in ("true", "1", "yes")
 
     if _is_cloud_registry(registry_host) and is_insecure:
-        console.print(f"[red]CONFIGURATION ERROR[/red]")
+        console.print("[red]CONFIGURATION ERROR[/red]")
         console.print(f"   Insecure mode is enabled for cloud registry: [bold]{registry_host}[/bold]")
-        console.print(f"   This causes HTTP (not HTTPS) connections and authentication failures.")
+        console.print("   This causes HTTP (not HTTPS) connections and authentication failures.")
         console.print()
-        console.print(f"[green]SOLUTION:[/green]")
-        console.print(f"   unset MODELOPS_BUNDLE_INSECURE")
-        console.print(f"   # or")
-        console.print(f"   export MODELOPS_BUNDLE_INSECURE=false")
+        console.print("[green]SOLUTION:[/green]")
+        console.print("   unset MODELOPS_BUNDLE_INSECURE")
+        console.print("   # or")
+        console.print("   export MODELOPS_BUNDLE_INSECURE=false")
         console.print()
-        console.print(f"[dim]Note: Insecure mode should only be used for localhost registries[/dim]")
+        console.print("[dim]Note: Insecure mode should only be used for localhost registries[/dim]")
         raise typer.Exit(1)
 
 
@@ -139,7 +141,6 @@ def track_registry_dependencies(ctx: ProjectContext, registry: "BundleRegistry")
     target files, observation files, and the registry.yaml itself are tracked.
     """
     from .ops import load_tracked, save_tracked
-    from modelops_contracts import BundleRegistry
 
     # Get all files from registry
     all_deps = registry.get_all_dependencies()
@@ -229,10 +230,10 @@ def require_remote(
     # Add helpful hints based on status
     if status == RemoteStatus.EMPTY:
         console.print()
-        console.print(f"[dim]Hint: Did you mistype the registry name or tag?")
+        console.print("[dim]Hint: Did you mistype the registry name or tag?")
         console.print()
         console.print("To push initial content, run:")
-        console.print(f"  [cyan]uv run modelops-bundle push[/cyan]")
+        console.print("  [cyan]uv run modelops-bundle push[/cyan]")
     elif status == RemoteStatus.UNREACHABLE:
         console.print()
         console.print("If using a local registry, ensure it's running:")
@@ -295,7 +296,7 @@ def init(
     """
     from .env_manager import pin_env
     from .templates import create_project_templates
-    from .bundle_service import initialize_bundle
+    from .ops import initialize_bundle
 
     # Resolve target directory
     target_dir, project_name, create_templates = _resolve_target_dir(path)
@@ -329,7 +330,21 @@ def init(
         # Create templates if new project
         if create_templates:
             create_project_templates(target_dir, project_name)
-            console.print(f"[green]✓[/green] Created project templates")
+            console.print("[green]✓[/green] Created project templates")
+
+            # Auto-track template files
+            tracked = TrackedFiles()
+            template_files = ["pyproject.toml", "README.md", ".modelopsignore"]
+            for file_name in template_files:
+                file_path = target_dir / file_name
+                if file_path.exists():
+                    rel_path = ctx.to_project_relative(file_path)
+                    if not ctx.should_ignore(rel_path):
+                        tracked.add(rel_path)
+
+            if tracked:
+                save_tracked(tracked, ctx)
+                console.print(f"[green]✓[/green] Auto-tracked {len(tracked.files)} template files")
 
         # Success message
         console.print(f"[green]✓[/green] Initialized project `{project_name}` with environment '{env}'")
@@ -411,7 +426,7 @@ def add(
 
         # Check if file is ignored (unless --force is used)
         if not force and ctx.should_ignore(rel_path):
-            console.print(f"[yellow]⚠[/yellow] The following path is ignored by .modelopsignore:")
+            console.print("[yellow]⚠[/yellow] The following path is ignored by .modelopsignore:")
             console.print(f"  {rel_path}")
             skipped_ignored.append(rel_path)
             continue
@@ -429,7 +444,7 @@ def add(
             console.print(f"  [green]+[/green] {file}")
     
     if skipped_ignored:
-        console.print(f"\n[dim]Hint: Use --force to add ignored files anyway.[/dim]")
+        console.print("\n[dim]Hint: Use --force to add ignored files anyway.[/dim]")
     
     if not added and not skipped_ignored:
         console.print("[yellow]No files added[/yellow]")
@@ -619,7 +634,6 @@ def status(
             try:
                 # Try to get index for storage info  
                 latest_digest = adapter.resolve_tag_to_digest(config.registry_ref, config.default_tag)
-                from .storage_models import BundleIndex
                 index = adapter.get_index(config.registry_ref, latest_digest)
                 for file_path, entry in index.files.items():
                     storage_info[file_path] = format_storage_display(
@@ -627,11 +641,10 @@ def status(
                         config=config,
                         entry=entry
                     )
-            except:
+            except Exception:
                 pass
         
         # Determine storage for local files based on policy
-        from .storage_models import StorageType
         
         for path, change_type, file_info in sorted(all_items):
             # Determine storage location
@@ -815,7 +828,6 @@ def push(
             # Determine storage destination
             storage_display = ""
             if config.storage and config.storage.uses_blob_storage:
-                from .storage_models import StorageType
                 storage_type, _ = config.storage.classify(Path(file.path), file.size)
                 storage_display = " " + format_storage_display(storage_type, config=config, direction="→")
             console.print(f"  [green]↑[/green] {file.path} ({humanize_size(file.size)}){storage_display}")
@@ -852,12 +864,12 @@ def push(
     
     # No confirmation by default - push directly
     target = f"{config.registry_ref}:{tag or config.default_tag}"
-    
+
     # Execute push
-    console.print("\n[bold]Pushing files...[/bold]")
+    console.print(f"\n[bold]Pushing to {target}...[/bold]")
     try:
         manifest_digest = ops_push(config, tracked, tag=tag, ctx=ctx, force=force)
-        console.print(f"[green]✓[/green] Pushed successfully")
+        console.print("[green]✓[/green] Pushed successfully")
         console.print(f"[dim]Digest: {manifest_digest[:16]}...[/dim]")
     except TagMovedError as e:
         # Specific handling for tag race errors
@@ -934,7 +946,6 @@ def pull(
         # Try to get storage info from remote index
         storage_info = {}
         try:
-            from .storage_models import BundleIndex
             adapter = _get_oras_adapter(config, ctx)
             # Use the resolved digest from the preview
             if hasattr(preview, 'resolved_digest') and preview.resolved_digest:
@@ -947,9 +958,9 @@ def pull(
                             entry=entry,
                             direction="←"
                         )
-                except:
+                except Exception:
                     pass
-        except:
+        except Exception:
             pass
         
         for file in preview.will_update_or_add:
@@ -958,7 +969,6 @@ def pull(
                 storage_display = " " + storage_info[file.path]
             elif config.storage:
                 # Fallback: classify based on policy if no index info
-                from .storage_models import StorageType
                 storage_type, _ = config.storage.classify(Path(file.path), file.size)
                 storage_display = " " + format_storage_display(storage_type, config=config, direction="←")
             console.print(f"  [blue]↓[/blue] {file.path} ({humanize_size(file.size)}){storage_display}")
@@ -1708,7 +1718,7 @@ def register_target(
         target_id = model_output
 
     # Add to registry
-    entry = registry.add_target(
+    registry.add_target(
         target_id=target_id,
         path=target_path,
         model_output=model_output,

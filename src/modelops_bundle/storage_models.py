@@ -7,7 +7,6 @@ and related storage types for hybrid OCI/blob storage patterns.
 import json
 import urllib.parse
 from enum import Enum
-from pathlib import Path
 from typing import Dict
 
 from pydantic import BaseModel, Field, field_validator

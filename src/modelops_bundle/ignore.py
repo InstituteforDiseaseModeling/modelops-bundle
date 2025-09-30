@@ -1,7 +1,7 @@
 """Gitignore-style pattern matching for modelops-bundle."""
 
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable
 
 from pathspec import PathSpec
 from pathspec.patterns import GitWildMatchPattern

@@ -1,22 +1,20 @@
 """ORAS adapter for OCI registry operations."""
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 import hashlib
 import json
 import logging
 import os
 import tempfile
 import time
-import warnings
 
 import oras.auth
 import oras.client
 from oras.container import Container
 
 from modelops_contracts import AuthProvider
-from .context import ProjectContext
-from .constants import BUNDLE_VERSION, BUNDLE_INDEX_MEDIA_TYPE
+from .constants import BUNDLE_INDEX_MEDIA_TYPE
 from .core import FileInfo, RemoteState
 from .errors import (
     AuthError,
@@ -27,7 +25,7 @@ from .errors import (
     UnsupportedArtifactError,
 )
 from .storage_models import BundleIndex, BundleFileEntry, StorageType
-from .utils import get_iso_timestamp, compute_digest
+from .utils import compute_digest
 
 # OCI media types for manifest accept headers
 OCI_ACCEPT = ",".join([
@@ -53,7 +51,7 @@ def _safe_target(root: Path, rel_path: str) -> Path:
     """
     # Check for empty path
     if not rel_path or not rel_path.strip():
-        raise ValueError(f"Unsafe path in bundle: empty path")
+        raise ValueError("Unsafe path in bundle: empty path")
     
     # Forbid absolute or parent traversal
     # Check both forward and backslash for cross-platform safety
@@ -197,7 +195,7 @@ class OrasAdapter:
 
         if is_localhost and not self.insecure:
             print(f"⚠ WARNING: Connecting to localhost registry '{registry_host}' in secure mode.")
-            print(f"   If you get connection errors, you may need: MODELOPS_BUNDLE_INSECURE=true")
+            print("   If you get connection errors, you may need: MODELOPS_BUNDLE_INSECURE=true")
 
     def _ensure_client(self) -> None:
         """Ensure we have a client instance.

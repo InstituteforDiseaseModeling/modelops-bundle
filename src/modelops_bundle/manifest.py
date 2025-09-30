@@ -6,7 +6,6 @@ and deterministic composite digests for provenance.
 """
 
 import json
-import hashlib
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import logging
@@ -18,7 +17,7 @@ except ImportError:
     # Fallback for development
     EnvironmentDigest = None
 
-from .hashing import compute_file_digest, compute_composite_digest, file_hash
+from .hashing import compute_file_digest, compute_composite_digest
 
 logger = logging.getLogger(__name__)
 

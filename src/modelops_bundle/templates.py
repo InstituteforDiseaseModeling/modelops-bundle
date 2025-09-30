@@ -5,7 +5,6 @@ a new ModelOps bundle project, similar to how uv init creates templates.
 """
 
 from pathlib import Path
-from typing import Optional
 
 
 def create_pyproject_toml(project_name: str) -> str:
@@ -50,11 +49,8 @@ A ModelOps bundle project.
 ## Quick Start
 
 ```bash
-# Discover models in the codebase
-mops-bundle discover
-
-# Add models interactively
-mops-bundle discover --interactive --save
+# Add files to track
+mops-bundle add .
 
 # Generate manifest
 mops-bundle manifest
@@ -67,8 +63,6 @@ mops-bundle push
 
 ```
 {project_name}/
-├── models/           # Model implementations
-│   └── example.py    # Example model
 ├── pyproject.toml    # Project configuration
 ├── README.md         # This file
 └── .modelopsignore   # Patterns to exclude from bundle
@@ -76,64 +70,9 @@ mops-bundle push
 
 ## Next Steps
 
-1. Add your model implementations to the `models/` directory
-2. Use `mops-bundle discover` to find and register your models
-3. Create a manifest with `mops-bundle manifest`
-4. Push to your registry with `mops-bundle push`
-'''
-
-
-def create_example_model() -> str:
-    """Generate example model code.
-
-    Returns:
-        Content for models/example.py file
-    """
-    return '''"""Example model for ModelOps."""
-
-
-class ExampleModel:
-    """A simple example model demonstrating the expected interface."""
-
-    def __init__(self):
-        """Initialize the model."""
-        self.name = "Example"
-        self.version = "0.1.0"
-
-    def parameters(self):
-        """Return default parameters for the model.
-
-        Returns:
-            Dict of parameter names to default values
-        """
-        return {
-            "rate": 0.5,
-            "scale": 1.0,
-            "threshold": 0.8
-        }
-
-    def simulate(self, params, seed=None):
-        """Run simulation with given parameters.
-
-        Args:
-            params: Dictionary of parameters
-            seed: Optional random seed for reproducibility
-
-        Returns:
-            Dictionary of simulation results
-        """
-        # Your simulation logic here
-        rate = params.get("rate", 0.5)
-        scale = params.get("scale", 1.0)
-
-        # Example computation
-        result = rate * scale
-
-        return {
-            "result": result,
-            "status": "success",
-            "seed": seed
-        }
+1. Add your model files with `mops-bundle add <files>`
+2. Create a manifest with `mops-bundle manifest`
+3. Push to your registry with `mops-bundle push`
 '''
 
 
@@ -216,7 +155,6 @@ def create_project_templates(project_path: Path, project_name: str) -> None:
     This creates the standard set of files for a new ModelOps bundle project:
     - pyproject.toml
     - README.md
-    - models/example.py
     - .modelopsignore
     - Updates .gitignore
 
@@ -233,19 +171,6 @@ def create_project_templates(project_path: Path, project_name: str) -> None:
     readme_path = project_path / "README.md"
     if not readme_path.exists():
         readme_path.write_text(create_readme(project_name))
-
-    # Create models directory and example
-    models_dir = project_path / "models"
-    models_dir.mkdir(exist_ok=True)
-
-    example_path = models_dir / "example.py"
-    if not example_path.exists():
-        example_path.write_text(create_example_model())
-
-    # Create models __init__.py
-    models_init = models_dir / "__init__.py"
-    if not models_init.exists():
-        models_init.write_text('"""Models package."""\n')
 
     # Create .modelopsignore
     ignore_path = project_path / ".modelopsignore"

@@ -10,7 +10,6 @@ import json
 import subprocess
 import urllib.request
 import urllib.parse
-from typing import Optional
 from modelops_contracts import AuthProvider, Credential
 
 
@@ -97,7 +96,7 @@ class AzureCliAuth(AuthProvider):
                 access_token = result.get("access_token")
                 if not access_token:
                     from ..errors import AuthError
-                    raise AuthError(f"No access token in OAuth response")
+                    raise AuthError("No access token in OAuth response")
                 return access_token
         except Exception as e:
             from ..errors import AuthError

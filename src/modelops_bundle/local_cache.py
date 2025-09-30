@@ -288,7 +288,7 @@ class LocalCAS:
         # Lock on a per-object lock file (persists, but OS cleans up on crash)
         lock_path = dst.with_suffix(".lock")
         
-        with portalocker.Lock(str(lock_path), "w", timeout=300) as lock:
+        with portalocker.Lock(str(lock_path), "w", timeout=300):
             # Re-check after acquiring lock (TOCTOU fix)
             if dst.exists():
                 return dst

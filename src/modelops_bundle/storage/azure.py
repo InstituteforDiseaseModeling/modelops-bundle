@@ -1,9 +1,8 @@
 """Azure blob storage implementation."""
 
-import os
 import urllib.parse
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Tuple
 
 from ..storage_models import BlobReference
 
