@@ -18,7 +18,7 @@ except ImportError:
     # Fallback for development
     EnvironmentDigest = None
 
-from .hashing import token_hash, file_hash, compute_composite_digest
+from .hashing import compute_file_digest, compute_composite_digest, file_hash
 
 logger = logging.getLogger(__name__)
 
@@ -64,11 +64,8 @@ def compute_file_hash(file_path: Path) -> str:
     Returns:
         Hex-encoded SHA256 hash
     """
-    # Use our semantic hashing for Python files
-    if file_path.suffix == ".py":
-        return token_hash(file_path)
-    else:
-        return file_hash(file_path)
+    # Use simple file hashing for all files now (no token hashing)
+    return compute_file_digest(file_path)
 
 
 def read_pyproject_config() -> Optional[Dict[str, Any]]:

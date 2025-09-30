@@ -185,6 +185,7 @@ def _copy_with_sendfile(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 # ---- LocalCAS implementation ------------------------------------------------
+# TODO: working? Status?
 
 class LocalCAS:
     """Local content-addressed storage with atomic operations and proper locking.

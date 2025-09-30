@@ -5,53 +5,171 @@ from typing import Dict, Any
 
 
 # Sample file contents
-MODEL_PY = '''"""Basic SIR Epidemiological Model"""
+MODEL_PY = '''"""Basic SIR Epidemiological Models using modelops-calabaria"""
 import numpy as np
 import pandas as pd
 from typing import Dict, Any
 import yaml
+import modelops_calabaria as cb
 
-class SIRModel:
+
+class StochasticSIR(cb.BaseModel):
+    """Stochastic SIR model with randomized transmission events."""
+
     def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
         self.beta = config['parameters']['transmission_rate']
         self.gamma = config['parameters']['recovery_rate']
         self.population = config['parameters']['population']
-    
-    def run_simulation(self, days: int, initial_infected: int = 1) -> pd.DataFrame:
-        """Run SIR model simulation"""
+
+    def simulate(self, params: Dict[str, Any], seed: int = None) -> pd.DataFrame:
+        """Run stochastic SIR model simulation.
+
+        Args:
+            params: Parameter overrides
+            seed: Random seed for reproducibility
+
+        Returns:
+            DataFrame with simulation results
+        """
+        if seed is not None:
+            np.random.seed(seed)
+
+        # Allow parameter overrides
+        beta = params.get('beta', self.beta)
+        gamma = params.get('gamma', self.gamma)
+        days = params.get('days', 365)
+        initial_infected = params.get('initial_infected', 10)
+
         S, I, R = self.population - initial_infected, initial_infected, 0
-        
+
         results = []
         for day in range(days):
-            new_infections = self.beta * S * I / self.population
-            new_recoveries = self.gamma * I
-            
+            # Add stochastic noise
+            noise = np.random.normal(1.0, 0.1)
+            new_infections = noise * beta * S * I / self.population
+            new_recoveries = gamma * I
+
             S -= new_infections
-            I += new_infections - new_recoveries  
+            I += new_infections - new_recoveries
             R += new_recoveries
-            
+
             results.append({
                 'day': day,
                 'susceptible': max(0, S),
                 'infected': max(0, I),
                 'recovered': max(0, R)
             })
-        
+
         return pd.DataFrame(results)
 
+    def extract_prevalence(self, raw_output: pd.DataFrame, timepoint: int = None) -> float:
+        """Extract prevalence at a given timepoint."""
+        if timepoint is None:
+            return raw_output['infected'].max()
+        return raw_output.loc[raw_output['day'] == timepoint, 'infected'].iloc[0]
+
+
+class DeterministicSIR(cb.BaseModel):
+    """Deterministic SIR model without randomness."""
+
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
+        self.beta = config['parameters']['transmission_rate']
+        self.gamma = config['parameters']['recovery_rate']
+        self.population = config['parameters']['population']
+
+    def simulate(self, params: Dict[str, Any], seed: int = None) -> pd.DataFrame:
+        """Run deterministic SIR model simulation.
+
+        Args:
+            params: Parameter overrides
+            seed: Random seed (ignored for deterministic model)
+
+        Returns:
+            DataFrame with simulation results
+        """
+        # Deterministic model ignores seed
+        beta = params.get('beta', self.beta)
+        gamma = params.get('gamma', self.gamma)
+        days = params.get('days', 365)
+        initial_infected = params.get('initial_infected', 10)
+
+        S, I, R = self.population - initial_infected, initial_infected, 0
+
+        results = []
+        for day in range(days):
+            new_infections = beta * S * I / self.population
+            new_recoveries = gamma * I
+
+            S -= new_infections
+            I += new_infections - new_recoveries
+            R += new_recoveries
+
+            results.append({
+                'day': day,
+                'susceptible': max(0, S),
+                'infected': max(0, I),
+                'recovered': max(0, R)
+            })
+
+        return pd.DataFrame(results)
+
+    def extract_incidence(self, raw_output: pd.DataFrame) -> pd.Series:
+        """Extract daily incidence from simulation."""
+        # Calculate new infections per day
+        incidence = -raw_output['susceptible'].diff()
+        incidence[0] = 0  # No new infections on day 0
+        return incidence
+
+
+class NetworkSIR(StochasticSIR):
+    """Network-based SIR model that extends StochasticSIR."""
+
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
+        self.network_effect = config.get('parameters', {}).get('network_effect', 1.2)
+
+    def simulate(self, params: Dict[str, Any], seed: int = None) -> pd.DataFrame:
+        """Run network SIR with modified transmission based on network structure."""
+        # Get base simulation from parent
+        results = super().simulate(params, seed)
+
+        # Apply network effect to infections
+        results['infected'] *= self.network_effect
+
+        # Ensure population conservation
+        total_pop = results['susceptible'] + results['infected'] + results['recovered']
+        results['infected'] = results['infected'] * (self.population / total_pop)
+
+        return results
+
+
 def main():
-    """Run model with config"""
+    """Run all models with config"""
     with open('config.yaml', 'r') as f:
         config = yaml.safe_load(f)
-    
-    model = SIRModel(config)
-    results = model.run_simulation(config['simulation']['days'])
-    
-    print(f"Peak infections: {results['infected'].max():.0f}")
-    print(f"Final recovered: {results['recovered'].iloc[-1]:.0f}")
-    
-    results.to_csv('output/results.csv', index=False)
-    print("Results saved to output/results.csv")
+
+    # Run stochastic model
+    stochastic = StochasticSIR(config)
+    stoch_results = stochastic.simulate({}, seed=42)
+
+    # Run deterministic model
+    deterministic = DeterministicSIR(config)
+    det_results = deterministic.simulate({})
+
+    print("Stochastic Model:")
+    print(f"  Peak infections: {stoch_results['infected'].max():.0f}")
+    print(f"  Final recovered: {stoch_results['recovered'].iloc[-1]:.0f}")
+
+    print("\\nDeterministic Model:")
+    print(f"  Peak infections: {det_results['infected'].max():.0f}")
+    print(f"  Final recovered: {det_results['recovered'].iloc[-1]:.0f}")
+
+    # Save results
+    stoch_results.to_csv('output/stochastic_results.csv', index=False)
+    det_results.to_csv('output/deterministic_results.csv', index=False)
+    print("\\nResults saved to output/")
 
 if __name__ == '__main__':
     main()
@@ -156,15 +274,24 @@ REQUIREMENTS_TXT = '''numpy>=1.21.0
 pandas>=1.3.0
 pyyaml>=6.0
 matplotlib>=3.5.0
-scipy>=1.7.0'''
+scipy>=1.7.0
+modelops-calabaria>=0.1.0'''
 
-README_MD = '''# Sample Epidemiological Model
+README_MD = '''# Sample Epidemiological Models
 
-A minimal SIR (Susceptible-Infected-Recovered) epidemiological model for testing purposes.
+SIR (Susceptible-Infected-Recovered) epidemiological models using modelops-calabaria.
+
+## Models
+
+The project includes three model variants, all inheriting from `cb.BaseModel`:
+
+- **StochasticSIR**: Stochastic model with randomized transmission events
+- **DeterministicSIR**: Deterministic model without randomness
+- **NetworkSIR**: Network-based model extending StochasticSIR
 
 ## Files
 
-- `src/model.py` - Core SIR model implementation
+- `src/model.py` - Three SIR model implementations using modelops-calabaria
 - `src/targets.py` - Target metrics calculation
 - `data/data.csv` - Sample epidemiological data
 - `config.yaml` - Model configuration
@@ -179,11 +306,30 @@ pip install -r requirements.txt
 # Create output directory
 mkdir -p output
 
-# Run model
+# Run all models
 python src/model.py
 
 # Calculate targets
 python src/targets.py
+```
+
+## Registering Models with ModelOps Bundle
+
+These models are designed to work with modelops-bundle's model registry:
+
+```bash
+# Auto-discover and register all BaseModel subclasses
+mops-bundle register-model src/model.py \\
+  --data data/data.csv \\
+  --data config.yaml \\
+  --output prevalence \\
+  --output incidence
+
+# Or register specific models only
+mops-bundle register-model src/model.py \\
+  --class StochasticSIR \\
+  --class DeterministicSIR \\
+  --data data/data.csv
 ```'''
 
 

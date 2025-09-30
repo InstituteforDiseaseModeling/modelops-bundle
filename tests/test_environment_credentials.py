@@ -255,8 +255,9 @@ class TestBundleServiceWithEnvManager:
             # Initialize service (should load pinned environment for auth)
             service = BundleService()
 
-            # Service should have loaded config
-            assert service.config.registry_ref == "test.registry.com/repo"
+            # Service should have loaded config with dynamically resolved registry
+            # (registry_ref is now built from environment's login_server + project name)
+            assert service.config.registry_ref == "test.registry.com/test_project"
 
     def test_bundle_service_operations_load_credentials(self, temp_project, mock_environment, monkeypatch):
         """Test that service operations can access storage credentials."""
@@ -292,4 +293,5 @@ class TestBundleServiceWithEnvManager:
 
             # Service can be created and would have access to credentials
             service = BundleService()
-            assert service.config.registry_ref == "test.registry.com/repo"
+            # Registry ref is now dynamically resolved from environment
+            assert service.config.registry_ref == "test.registry.com/test_project"

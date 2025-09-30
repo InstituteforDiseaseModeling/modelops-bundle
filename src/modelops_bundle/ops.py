@@ -197,7 +197,11 @@ def _index_to_remote_state(index: BundleIndex, manifest_digest: str) -> RemoteSt
 # ============= File I/O =============
 
 def load_config(ctx: Optional[ProjectContext] = None) -> BundleConfig:
-    """Load bundle configuration with automatic migration for old configs."""
+    """Load bundle configuration with dynamic registry resolution from pinned environment.
+
+    The registry_ref is dynamically resolved from the currently pinned environment,
+    falling back to the value in config.yaml if no environment is pinned or available.
+    """
     if ctx is None:
         ctx = ProjectContext()
 
@@ -221,7 +225,30 @@ def load_config(ctx: Optional[ProjectContext] = None) -> BundleConfig:
             with ctx.config_path.open("w") as f:
                 yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
 
-    return BundleConfig(**data)
+    # Create config from file
+    config = BundleConfig(**data)
+
+    # Override registry_ref from pinned environment (dynamic resolution)
+    try:
+        from .env_manager import read_pinned_env
+        from modelops_contracts import BundleEnvironment
+
+        env_name = read_pinned_env(ctx.storage_dir)
+        env = BundleEnvironment.load(env_name)
+
+        if env.registry:
+            # Dynamically build registry_ref from environment
+            project_name = ctx.root.name
+            config.registry_ref = f"{env.registry.login_server}/{project_name}"
+    except (FileNotFoundError, Exception):
+        # Keep the registry_ref from config.yaml as fallback
+        # This handles cases where:
+        # - No pin file exists
+        # - Environment file is missing
+        # - Any other error in loading environment
+        pass
+
+    return config
 
 
 def save_config(config: BundleConfig, ctx: Optional[ProjectContext] = None) -> None:

@@ -37,6 +37,8 @@ class BundleConfig(BaseModel):
         cache_dir: Optional directory for LocalCAS cache (enables deduplication)
         cache_link_mode: Materialization strategy ("auto", "reflink", "hardlink", "copy")
 
+    TODO: LocalCAS needs audit, could be partial.
+
     Note: Environment is stored separately in .modelops-bundle/env file.
     """
 
