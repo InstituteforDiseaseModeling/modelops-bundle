@@ -45,7 +45,6 @@ By default, ModelOps Bundle uses OCI-only storage with no external dependencies:
 registry_ref: localhost:5555/my-model
 default_tag: latest
 storage:
-  enabled: true
   mode: auto          # Hybrid mode (default)
   threshold_bytes: 52428800  # 50MB
   provider: ""        # Empty = OCI-only
@@ -58,7 +57,6 @@ To enable external blob storage for large files:
 ```yaml
 # .modelops-bundle/config.yaml
 storage:
-  enabled: true
   mode: auto
   threshold_bytes: 10485760  # 10MB threshold
   provider: azure

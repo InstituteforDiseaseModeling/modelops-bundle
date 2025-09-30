@@ -302,6 +302,7 @@ class ModelOpsBundleRepository(BundleRepository):
                 
                 # Include file content
                 with open(file_path, "rb") as f:
+                    # Read in 8KB chunks - optimal for I/O (fits L1 cache, minimizes syscalls)
                     while chunk := f.read(8192):
                         hasher.update(chunk)
         

@@ -1,7 +1,8 @@
 """Manifest generation for model bundles.
 
 Generates manifest.json describing the bundle contents
-without executing model code.
+without executing model code, including environment tracking
+and deterministic composite digests for provenance.
 """
 
 import json
@@ -11,24 +12,63 @@ from typing import Dict, Any, List, Optional
 import logging
 import tomllib
 
+try:
+    from modelops_contracts import EnvironmentDigest
+except ImportError:
+    # Fallback for development
+    EnvironmentDigest = None
+
+from .hashing import token_hash, file_hash, compute_composite_digest
 
 logger = logging.getLogger(__name__)
 
 
+def capture_environment() -> Optional[Dict[str, Any]]:
+    """Capture current execution environment.
+
+    Returns:
+        Environment dictionary with digest, or None if not available
+    """
+    if EnvironmentDigest is None:
+        return None
+
+    # Capture basic environment
+    env = EnvironmentDigest.capture_current()
+
+    # Try to get key package versions
+    packages = {}
+    try:
+        import importlib.metadata
+        for pkg in ["numpy", "scipy", "pandas", "polars", "dask"]:
+            try:
+                version = importlib.metadata.version(pkg)
+                packages[pkg] = version
+            except importlib.metadata.PackageNotFoundError:
+                pass
+    except ImportError:
+        pass
+
+    # Add packages if found
+    if packages:
+        env = env.with_dependencies(packages)
+
+    return env.to_json()
+
+
 def compute_file_hash(file_path: Path) -> str:
     """Compute SHA256 hash of a file.
-    
+
     Args:
         file_path: Path to file
-    
+
     Returns:
         Hex-encoded SHA256 hash
     """
-    sha256_hash = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        for byte_block in iter(lambda: f.read(4096), b""):
-            sha256_hash.update(byte_block)
-    return sha256_hash.hexdigest()
+    # Use our semantic hashing for Python files
+    if file_path.suffix == ".py":
+        return token_hash(file_path)
+    else:
+        return file_hash(file_path)
 
 
 def read_pyproject_config() -> Optional[Dict[str, Any]]:
@@ -82,20 +122,24 @@ def build_manifest(
     output_path: Optional[Path] = None
 ) -> Dict[str, Any]:
     """Build a manifest describing the bundle contents.
-    
+
+    Includes environment tracking and composite digest with
+    proper domain separation for provenance.
+
     Args:
         models: Optional list of model configurations.
                 If not provided, will auto-discover.
         output_path: Optional path to write manifest.json
-    
+
     Returns:
-        Manifest dictionary
+        Manifest dictionary with environment and composite digest
     """
     manifest = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",  # Updated for environment tracking
         "models": {},
         "files": {},
-        "bundle_digest": ""
+        "bundle_digest": "",
+        "environment": None
     }
     
     # Read configuration from pyproject.toml if it exists
@@ -154,24 +198,36 @@ def build_manifest(
         # Track all files
         all_files.update(model_files)
     
-    # Compute file hashes
+    # Capture environment
+    env_data = capture_environment()
+    if env_data:
+        manifest["environment"] = env_data
+
+    # Compute file hashes and build components for composite digest
+    components = []
     for file_path in sorted(all_files):
         if file_path.exists():
-            file_hash = compute_file_hash(file_path)
+            file_hash_val = compute_file_hash(file_path)
             manifest["files"][str(file_path)] = {
-                "sha256": file_hash,
+                "sha256": file_hash_val,
                 "size": file_path.stat().st_size
             }
-    
-    # Compute bundle digest from file hashes
-    if manifest["files"]:
-        # Sort files and concatenate hashes
-        digest_input = "|".join(
-            f"{path}:{info['sha256']}"
-            for path, info in sorted(manifest["files"].items())
-        )
-        bundle_hash = hashlib.sha256(digest_input.encode()).hexdigest()
-        manifest["bundle_digest"] = f"sha256:{bundle_hash}"
+
+            # Classify file type for composite digest
+            if str(file_path).startswith("src/models/"):
+                component_type = "MODEL_CODE"
+            elif file_path.suffix in [".csv", ".json", ".parquet", ".yaml", ".yml"]:
+                component_type = "DATA"
+            else:
+                component_type = "CODE_DEP"
+
+            components.append((component_type, str(file_path), file_hash_val))
+
+    # Compute composite bundle digest with domain separation
+    if components:
+        env_digest = env_data["digest"] if env_data else "no-env"
+        bundle_hash = compute_composite_digest(components, env_digest)
+        manifest["bundle_digest"] = f"bundle:{bundle_hash}"
     
     # Write manifest if output path provided
     if output_path:

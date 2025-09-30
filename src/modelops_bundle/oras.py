@@ -187,16 +187,16 @@ class OrasAdapter:
 
         if is_cloud_registry and self.insecure:
             raise RuntimeError(
-                f"🚨 CONFIGURATION ERROR: Insecure mode is enabled for cloud registry '{registry_host}'\n"
+                f"CONFIGURATION ERROR: Insecure mode is enabled for cloud registry '{registry_host}'\n"
                 f"   This will cause HTTP (not HTTPS) connections and authentication failures.\n"
                 f"   \n"
                 f"   SOLUTION: Run 'unset MODELOPS_BUNDLE_INSECURE' or set it to 'false'\n"
                 f"   \n"
-                f"   💡 Insecure mode should only be used for local registries like localhost:5555"
+                f"   Note: Insecure mode should only be used for local registries like localhost:5555"
             )
 
         if is_localhost and not self.insecure:
-            print(f"⚠️  WARNING: Connecting to localhost registry '{registry_host}' in secure mode.")
+            print(f"⚠ WARNING: Connecting to localhost registry '{registry_host}' in secure mode.")
             print(f"   If you get connection errors, you may need: MODELOPS_BUNDLE_INSECURE=true")
 
     def _ensure_client(self) -> None:

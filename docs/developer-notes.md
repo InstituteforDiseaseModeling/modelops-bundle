@@ -1,5 +1,71 @@
 # Developer Notes
 
+## Environment Management (Internal)
+
+The environment system uses a pinning mechanism similar to `.python-version` or `.nvmrc`. This is an implementation detail that users don't need to know about.
+
+### How It Works
+
+1. On `init`, the environment is pinned to `.modelops-bundle/env` file (defaults to "dev")
+2. Commands read this pinned environment and load credentials from `~/.modelops/bundle-env/{env}.yaml`
+3. Developers can switch environments using `mops-bundle dev switch <env>`
+
+### Developer Commands
+
+These commands are hidden under the `dev` subcommand to keep them away from regular users:
+
+```bash
+# Show current pinned environment
+mops-bundle dev env
+
+# Switch to different environment
+mops-bundle dev switch local
+mops-bundle dev switch dev
+```
+
+### Implementation Details
+
+- `env_manager.py` handles all environment operations
+- `pin_env()` writes environment name to `.modelops-bundle/env`
+- `read_pinned_env()` reads the pinned environment
+- `load_env_for_command()` loads credentials at runtime
+- No environment field in `config.yaml` (stored separately in `env` file)
+
+### Directory Structure
+
+```
+project/
+├── .modelops-bundle/
+│   ├── config.yaml     # Bundle config (no environment field)
+│   ├── env            # Pinned environment name (e.g., "dev")
+│   └── tracked        # Tracked files list
+
+~/.modelops/
+└── bundle-env/        # Environment configs
+    ├── local.yaml     # Created by make start
+    └── dev.yaml       # Created by mops infra up
+```
+
+### Environment File Format
+
+```yaml
+# ~/.modelops/bundle-env/dev.yaml
+environment: dev
+timestamp: '2024-01-15T10:30:00'
+registry:
+  provider: azure
+  login_server: modelopsdevacrvsp.azurecr.io
+  registry_name: modelopsdevacrvsp
+  requires_auth: true
+storage:
+  provider: azure
+  account_name: modelopsdevstg
+  connection_string: "DefaultEndpointsProtocol=https;..."
+  containers:
+    - bundles
+  endpoint: "https://modelopsdevstg.blob.core.windows.net"
+```
+
 
 
 ## Registry UI + ORAS Artifacts
@@ -175,12 +241,12 @@ fixes the layer title issue. Temp file management is simple with context manager
 
 ### Registry Configuration Hierarchy
 
-The `REGISTRY_URL` and related environment variables follow this precedence:
+The registry configuration follows this precedence:
 
-1. **Command-line flags**: `--registry` or `--env` override everything
-2. **Environment variables**: `REGISTRY_URL`, `MODELOPS_ENV`
-3. **ModelOps environment configs**: `~/.modelops/environments/<env>.yaml`
-4. **Auto-detection**: Local Docker containers or first available environment
+1. **Pinned environment**: Read from `.modelops-bundle/env` file
+2. **Environment configs**: Loaded from `~/.modelops/bundle-env/<env>.yaml`
+3. **Environment variables**: `REGISTRY_URL` for testing/overrides
+4. **Auto-detection**: Local Docker containers if available
 
 ### Local Development Setup
 
@@ -228,15 +294,16 @@ docker stop test-registry && docker rm test-registry
 
 ### Production/Cloud Setup
 
-**Who sets REGISTRY_URL in production:**
-- **Infrastructure provisioning**: `mops infra up` creates `~/.modelops/environments/<env>.yaml`
-- **Environment discovery**: `mops-bundle` reads these configs automatically
-- **Manual override**: Use `--env dev` or `export MODELOPS_ENV=dev`
+**How environments work in production:**
+- **Infrastructure provisioning**: `mops infra up` creates `~/.modelops/bundle-env/dev.yaml`
+- **Environment pinning**: `mops-bundle init` pins the environment to `.modelops-bundle/env`
+- **Automatic loading**: Commands read pinned env and load credentials automatically
+- **Switching**: Use `mops-bundle dev switch <env>` to change environments
 
-**Environment config example (`~/.modelops/environments/dev.yaml`):**
+**Environment config example (`~/.modelops/bundle-env/dev.yaml`):**
 ```yaml
 registry:
-  url: modelopsdevacrvsb.azurecr.io
+  login_server: modelopsdevacrvsb.azurecr.io
   auth_provider: azure_cli
 storage:
   connection_string: DefaultEndpointsProtocol=https;...
@@ -430,9 +497,8 @@ mops-bundle push
 
 | Variable | Purpose | Values | Notes |
 |----------|---------|--------|-------|
-| `REGISTRY_URL` | Override registry discovery | `localhost:5555`, `registry.azurecr.io` | Takes precedence over environment configs |
+| `REGISTRY_URL` | Override registry for testing | `localhost:5555`, `registry.azurecr.io` | Testing only - environments are pinned |
 | `MODELOPS_BUNDLE_INSECURE` | Enable HTTP (not HTTPS) | `true`, `1`, `yes` | **Only for localhost registries** |
-| `MODELOPS_ENV` | Choose environment config | `local`, `dev`, `prod` | Reads `~/.modelops/environments/<env>.yaml` |
 | `DEBUG` | Verbose error output | `1` | Shows full error traces |
 
 ## Development Workflow Summary

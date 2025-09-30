@@ -15,7 +15,11 @@
 ### CLI Enhancements
   - [x] Untracked in status
   - [x] Clean out emoji crap
-  - [ ] Auto semvar
+  - [x] Add `manifest` command for registry inspection
+  - [x] Add `ensure` command for materialization
+  - [x] Add `diff` command for comparing local and remote
+  - [x] Add `dev` subcommands for environment management
+  - [ ] Auto semver
   - [ ] Support glob patterns in add/remove commands
   - [ ] Add `bundle export` to create tar archives
   - [ ] Add `bundle import` from tar archives
@@ -23,11 +27,11 @@
 ## Future Enhancements
 
 ### Authentication Support
-  - [ ] Add proper auth handling to `OrasAdapter`
-  - Currently using `Registry(insecure=True)` 
-  - Need to support authenticated registries
-  - Consider using Docker credential helpers
-  - Support for token-based auth
+  - [x] Add proper auth handling to `OrasAdapter`
+  - [x] Support authenticated registries (Azure CLI, Docker config)
+  - [x] Environment-based credential loading
+  - [ ] Consider using Docker credential helpers
+  - [ ] Support for token-based auth
 
 ### Progress Indicators
 

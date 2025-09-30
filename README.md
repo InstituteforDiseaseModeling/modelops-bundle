@@ -4,17 +4,26 @@
 
 A git-like workflow for managing, building, and deploying model bundles to ModelOps infrastructure.
 
+## Installation
+
+```bash
+# Install from GitHub using uv
+uv pip install git+https://github.com/vsbuffalo/modelops-bundle.git
+
+# Or clone and install for development
+git clone https://github.com/vsbuffalo/modelops-bundle.git
+cd modelops-bundle
+uv pip install -e .
+```
+
 ## Quick Start
 
 ```bash
-# Install
-pip install modelops-bundle
+# Initialize a new project
+mops-bundle init my-project
 
-# Initialize a new project with local environment
-mops-bundle init my-project --env local
-
-# Or initialize current directory with dev environment
-mops-bundle init --env dev
+# Or initialize current directory
+mops-bundle init
 
 # Add files to bundle
 mops-bundle add src/ data/ config.yaml
@@ -23,59 +32,14 @@ mops-bundle add src/ data/ config.yaml
 mops-bundle push
 ```
 
-## Environment-Based Configuration
+## Environment Setup
 
-ModelOps Bundle uses explicit environment selection for registry and storage configuration.
+ModelOps Bundle uses environment configurations from `~/.modelops/bundle-env/` which are automatically created when you provision ModelOps infrastructure with `mops infra up`.
 
-### How It Works
-
-1. **Choose Your Environment**
-   - Specify environment with `--env` flag when initializing (defaults to "local")
-   - Environment configuration must exist in `~/.modelops/bundle-env/{env}.yaml`
-   - The chosen environment is saved in your project's config
-
-2. **Environment Files**
-   - **Local**: `~/.modelops/bundle-env/local.yaml` - for localhost development
-   - **Dev**: `~/.modelops/bundle-env/dev.yaml` - created by `mops infra up`
-   - These files contain registry URL and storage credentials
-
-3. **Persistent Configuration**
-   - Once initialized with an environment, all commands use that environment
-   - No need to specify `--env` on subsequent commands (push, pull, etc.)
-   - Environment credentials are loaded automatically at runtime
-
-### Local Development Setup
-
-For local development with Docker:
-
+For local development, start the Docker services:
 ```bash
-# 1. Start local registry and storage (from modelops-bundle/dev directory)
-cd dev && make start
-
-# This creates:
-# - Local registry at localhost:5555
-# - Azurite storage at localhost:10000
-# - Environment file at ~/.modelops/bundle-env/local.yaml
-
-# 2. Initialize your project with local environment
-mops-bundle init my-project --env local
-# ✓ Using environment 'local'
-```
-
-### Production Setup
-
-For production/cloud environments:
-
-```bash
-# 1. Provision infrastructure (creates dev environment)
-mops infra up --config infra.yaml
-
-# This creates ~/.modelops/bundle-env/dev.yaml
-# with Azure Container Registry URL and storage credentials
-
-# 2. Initialize your project with dev environment
-mops-bundle init my-project --env dev
-# ✓ Using environment 'dev'
+# From modelops-bundle/dev directory
+make start  # Starts local registry and storage
 ```
 
 ## Commands
@@ -85,51 +49,167 @@ Create a new bundle project or initialize existing directory.
 
 ```bash
 # Create new project directory
-mops-bundle init my-project --env local
+mops-bundle init my-project
 
 # Initialize current directory
-mops-bundle init --env dev
+mops-bundle init
+
+# Customize storage threshold
+mops-bundle init my-project --threshold 100
 ```
 
 Options:
-- `--env`: Specify ModelOps environment (defaults to "local")
+- `--threshold`: Size threshold in MB for blob storage (default: 50MB)
+- `--env`: Environment to use (default: dev)
+- `--tag`: Default tag (default: latest)
 
 ### add
-Add files to the bundle.
+Add files or directories to tracking. Directories are added recursively.
 
 ```bash
-mops-bundle add <files...> [--recursive]
+# Add specific files
+mops-bundle add src/model.py data/config.yaml
+
+# Add entire directories
+mops-bundle add src/ data/
+
+# Add everything (respects .modelopsignore)
+mops-bundle add .
+
+# Force-add ignored files
+mops-bundle add --force ignored.tmp
 ```
 
 Options:
-- `--recursive`: Add directories recursively
+- `--force`: Add files even if they're ignored
 
 ### remove
-Remove files from the bundle.
+Remove files from tracking (doesn't delete from disk unless --rm is used).
 
 ```bash
-mops-bundle remove <files...>
+# Stop tracking files
+mops-bundle remove src/old_model.py
+
+# Untrack AND delete files
+mops-bundle remove --rm tmp/
 ```
+
+Options:
+- `--rm`: Also delete the files from disk
+
+### status
+Show tracked files and their sync status.
+
+```bash
+# Show tracked and modified files
+mops-bundle status
+
+# Also show untracked files
+mops-bundle status -u
+
+# Only show untracked files
+mops-bundle status --untracked-only
+```
+
+Options:
+- `-u, --untracked`: Show untracked files
+- `--untracked-only`: Show only untracked files
+- `--include-ignored`: Include ignored files
 
 ### push
-Push bundle to registry.
+Push bundle to registry. Files larger than threshold (default 50MB) use blob storage.
 
 ```bash
-mops-bundle push [--tag TAG]
+# Push to default tag
+mops-bundle push
+
+# Push with specific tag
+mops-bundle push --tag v1.2.3
+
+# Preview what would be pushed
+mops-bundle push --dry-run
 ```
 
 Options:
-- `--tag`: Tag to push (defaults to "latest")
+- `--tag`: Tag to push (defaults to config default_tag)
+- `--dry-run`: Show what would be pushed without pushing
+- `--force`: Push even if tag has moved (bypass race protection)
 
 ### pull
-Pull bundle from registry.
+Pull bundle from registry. Won't overwrite local changes by default.
 
 ```bash
-mops-bundle pull [--tag TAG]
+# Pull latest version
+mops-bundle pull
+
+# Pull specific tag
+mops-bundle pull --tag v1.2.3
+
+# Overwrite local changes
+mops-bundle pull --overwrite
+
+# Also restore deleted files
+mops-bundle pull --restore-deleted
 ```
 
 Options:
-- `--tag`: Tag to pull (defaults to "latest")
+- `--tag`: Tag to pull (defaults to config default_tag)
+- `--overwrite`: Overwrite local changes
+- `--restore-deleted`: Restore files that were deleted locally
+- `--dry-run`: Show what would be pulled without pulling
+
+### manifest
+List and inspect registry tags.
+
+```bash
+# List all tags and manifests
+mops-bundle manifest
+
+# Show specific tag details
+mops-bundle manifest v1.2.3
+
+# Just list tag names
+mops-bundle manifest --tags-only
+```
+
+Options:
+- `--tags-only`: List only tag names
+- `--full`: Show full digests
+- `--all`: Show all manifests (no filtering)
+
+### diff
+Show differences between local and remote bundles.
+
+```bash
+# Compare with latest
+mops-bundle diff
+
+# Compare with specific tag
+mops-bundle diff --tag v1.2
+```
+
+Options:
+- `--tag`: Tag to compare with
+
+### ensure
+Materialize bundle to another directory (useful for deployments).
+
+```bash
+# Download latest to deployment directory
+mops-bundle ensure --dest /deploy/model
+
+# Download specific version
+mops-bundle ensure --ref v1.2 --dest /tmp
+
+# Mirror mode (removes extra files)
+mops-bundle ensure --mirror --dest /clean
+```
+
+Options:
+- `--ref`: Tag or sha256 digest to download
+- `--dest`: Destination directory (required)
+- `--mirror`: Prune files in dest that aren't in bundle
+- `--dry-run`: Preview what would happen
 
 ### status
 Show current bundle status.
@@ -138,22 +218,57 @@ Show current bundle status.
 mops-bundle status
 ```
 
+### diff
+Show differences between local and remote bundle.
+
+```bash
+# Compare with latest tag
+mops-bundle diff
+
+# Compare with specific tag
+mops-bundle diff --tag v1.0
+```
+
+### manifest
+Inspect registry manifests and tags.
+
+```bash
+# List all tags
+mops-bundle manifest
+
+# Inspect specific manifest
+mops-bundle manifest inspect --tag v1.0
+
+# Show manifest with limited entries
+mops-bundle manifest --limit 5
+```
+
+### ensure
+Materialize a bundle into a destination directory (useful for cloud workstations).
+
+```bash
+# Pull bundle to specific directory
+mops-bundle ensure /path/to/destination
+
+# Pull specific tag
+mops-bundle ensure /path/to/destination --tag v1.0
+```
+
 ## Configuration
 
 Bundle configuration is stored in `.modelops-bundle/config.yaml`:
 
 ```yaml
-environment: local  # Environment used for this bundle
 registry_ref: localhost:5555/my-project
 default_tag: latest
 storage:
   provider: azure  # or s3, gcs, fs
   container: modelops-bundles
-  mode: auto  # auto, blob, oci
+  mode: auto  # auto, blob, oci-inline
   threshold_bytes: 52428800  # 50MB
 ```
 
-This is created automatically when you run `mops-bundle init --env <env>`.
+This is created automatically when you run `mops-bundle init`.
 
 ## Storage Modes
 
@@ -161,52 +276,3 @@ This is created automatically when you run `mops-bundle init --env <env>`.
 - **Blob**: Store in blob storage with registry manifest pointing to blobs
 - **Auto**: Automatically choose based on size (default 50MB threshold)
 
-## Environment Configuration Details
-
-### Where Environments Come From
-
-Environment configurations are created in two ways:
-
-1. **Local Development** (`make start`)
-   - Running `make start` in the dev directory creates `~/.modelops/bundle-env/local.yaml`
-   - Contains localhost endpoints for registry (localhost:5555) and storage (127.0.0.1:10000)
-   - Used for testing with Docker containers
-
-2. **ModelOps Infrastructure** (`mops infra up`)
-   - Provisions Azure resources (ACR, Storage Account)
-   - Creates `~/.modelops/bundle-env/dev.yaml` with actual Azure endpoints
-   - Contains registry URL and storage connection strings with credentials
-
-### File Structure
-
-```
-~/.modelops/
-├── environments/
-│   ├── local.yaml      # Auto-created for Docker development
-│   └── dev.yaml        # Created by mops infra up 
-```
-
-Currently modelops just uses "dev" for its created workspaces; there isn't
-really the concept of a "production" alternative, since we assume research
-users are creating and tearing down their own workspaces.
-
-### Example Environment Config
-
-```yaml
-# ~/.modelops/environments/dev.yaml
-environment: dev
-timestamp: '2024-01-15T10:30:00'
-registry:
-  provider: azure
-  login_server: modelopsdevacrvsp.azurecr.io
-  registry_name: modelopsdevacrvsp
-  requires_auth: true
-storage:
-  provider: azure
-  account_name: modelopsdevstg
-  connection_string: "DefaultEndpointsProtocol=https;..."
-  containers:
-    - bundles
-    - results
-  endpoint: "https://modelopsdevstg.blob.core.windows.net"
-```

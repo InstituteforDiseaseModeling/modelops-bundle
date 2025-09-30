@@ -467,7 +467,7 @@ dev = [
 [[package]]
 name = "modelops-contracts"
 version = "0.1.0"
-source = { git = "https://github.com/vsbuffalo/modelops-contracts.git#977f127f0b0db834d07c97f49a5603f78f5ff903" }
+source = { git = "https://github.com/vsbuffalo/modelops-contracts.git#4930d51d132975cfc15d976d9e9886e6fd24b232" }
 dependencies = [
     { name = "pydantic" },
 ]

@@ -33,7 +33,11 @@ from .manifest import build_manifest, load_manifest
 from .env_manager import load_env_for_command
 
 
-app = typer.Typer(help="ModelOps-Bundle - OCI artifact-based model bundle synchronization")
+app = typer.Typer(help="""\
+Model bundle (model code and data) synchronization between workstation
+and cloud, for cloud-based execution. Track files, push to registry, 
+pull cloud version to local workstation.""")
+
 console = Console()
 
 
@@ -80,7 +84,7 @@ def _validate_environment_for_registry(registry_ref: str) -> None:
     is_insecure = insecure_env in ("true", "1", "yes")
 
     if _is_cloud_registry(registry_host) and is_insecure:
-        console.print(f"[red]🚨 CONFIGURATION ERROR[/red]")
+        console.print(f"[red]CONFIGURATION ERROR[/red]")
         console.print(f"   Insecure mode is enabled for cloud registry: [bold]{registry_host}[/bold]")
         console.print(f"   This causes HTTP (not HTTPS) connections and authentication failures.")
         console.print()
@@ -89,7 +93,7 @@ def _validate_environment_for_registry(registry_ref: str) -> None:
         console.print(f"   # or")
         console.print(f"   export MODELOPS_BUNDLE_INSECURE=false")
         console.print()
-        console.print(f"[dim]💡 Insecure mode should only be used for localhost registries[/dim]")
+        console.print(f"[dim]Note: Insecure mode should only be used for localhost registries[/dim]")
         raise typer.Exit(1)
 
 
@@ -249,17 +253,15 @@ def init(
     - Initialize the current directory (no path argument)
     - Create and initialize a new directory (with path argument)
 
-    The environment is pinned to .modelops-bundle/env and used for all operations.
-
     Examples:
-        # Initialize with default environment (dev)
+        # Initialize a new project
         mops-bundle init my-model
-
-        # Initialize with local environment (for testing)
-        mops-bundle init my-model --env local
 
         # Initialize current directory
         mops-bundle init
+
+        # Customize storage threshold
+        mops-bundle init my-model --threshold 100
     """
     from .env_manager import pin_env
     from .templates import create_project_templates
@@ -323,7 +325,16 @@ def add(
     files: List[Path] = typer.Argument(..., help="Files to track"),
     force: bool = typer.Option(False, "--force", help="Add ignored files anyway"),
 ):
-    """Add files to tracking."""
+    """Add files or directories to tracking.
+
+    Recursively adds all files in directories. Respects .modelopsignore.
+
+    Examples:
+        mops-bundle add src/model.py        # Add single file
+        mops-bundle add src/ data/          # Add all files in directories
+        mops-bundle add .                   # Add all non-ignored files
+        mops-bundle add --force ignored.tmp # Force-add ignored file
+    """
     ctx = require_project_context()
     
     # Load tracked files
@@ -399,7 +410,12 @@ def remove(
     files: List[Path] = typer.Argument(..., help="Files to untrack"),
     rm: bool = typer.Option(False, "--rm", help="Also delete the files from disk"),
 ):
-    """Remove files from tracking."""
+    """Remove files from tracking (doesn't delete from disk).
+
+    Examples:
+        mops-bundle remove src/old_model.py  # Stop tracking file
+        mops-bundle remove --rm tmp.py       # Untrack AND delete file
+    """
     ctx = require_project_context()
     
     # Load tracked files
@@ -462,7 +478,13 @@ def status(
     untracked_only: bool = typer.Option(False, "--untracked-only", help="Show only untracked files"),
     include_ignored: bool = typer.Option(False, "--include-ignored", help="Include ignored files"),
 ):
-    """Show bundle status."""
+    """Show tracked files and sync status.
+
+    Examples:
+        mops-bundle status                  # Show tracked/modified files
+        mops-bundle status -u               # Also show untracked files
+        mops-bundle status --untracked-only # Only show untracked files
+    """
     ctx = require_project_context()
 
     # Load environment (storage not always required for status)
@@ -695,7 +717,15 @@ def push(
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be pushed"),
     force: bool = typer.Option(False, "--force", help="Push even if tag has moved (bypass race protection)"),
 ):
-    """Push tracked files to registry."""
+    """Push bundle to registry.
+
+    Uploads all tracked files to the registry. Large files (>50MB) use blob storage.
+
+    Examples:
+        mops-bundle push                # Push to default tag
+        mops-bundle push --tag v1.2.3   # Push with specific tag
+        mops-bundle push --dry-run      # Preview what would be pushed
+    """
     ctx = require_project_context()
 
     # Load environment and set up storage credentials
@@ -816,7 +846,16 @@ def pull(
     restore_deleted: bool = typer.Option(False, "--restore-deleted", help="Restore deleted files"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be pulled"),
 ):
-    """Pull bundle from registry."""
+    """Pull bundle from registry.
+
+    Updates local files to match remote. Won't overwrite local changes by default.
+
+    Examples:
+        mops-bundle pull                        # Pull latest
+        mops-bundle pull --tag v1.2.3          # Pull specific version
+        mops-bundle pull --overwrite           # Replace local changes
+        mops-bundle pull --restore-deleted     # Also restore missing files
+    """
     ctx = require_project_context()
 
     # Load environment and set up storage credentials
@@ -947,7 +986,13 @@ def manifest(
     show_all: bool = typer.Option(False, "--all", help="Show all manifests (no filtering)"),
     limit: int = typer.Option(10, "-n", help="Number of manifests to show (default: 10)"),
 ):
-    """Inspect registry manifests and tags."""
+    """List and inspect registry tags.
+
+    Examples:
+        mops-bundle manifest              # List all tags
+        mops-bundle manifest v1.2.3       # Show specific tag details
+        mops-bundle manifest --tags-only  # Just list tag names
+    """
     ctx = require_project_context()
     
     try:
@@ -1110,7 +1155,12 @@ def manifest(
 def diff(
     tag: Optional[str] = typer.Option(None, help="Tag to compare"),
 ):
-    """Show differences between local and remote."""
+    """Show differences between local and remote bundles.
+
+    Examples:
+        mops-bundle diff            # Compare with latest
+        mops-bundle diff --tag v1.2 # Compare with specific tag
+    """
     ctx = require_project_context()
 
     try:
@@ -1177,7 +1227,15 @@ def ensure(
     mirror: bool = typer.Option(False, "--mirror", help="Prune files in dest that aren't in the bundle"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview what would happen"),
 ):
-    """Materialize a bundle into a destination directory (for cloud workstations, etc.)."""
+    """Materialize bundle to another directory (for deployments).
+
+    Downloads bundle without needing project initialization.
+
+    Examples:
+        mops-bundle ensure --dest /deploy/model      # Download latest
+        mops-bundle ensure --ref v1.2 --dest /tmp    # Specific version
+        mops-bundle ensure --mirror --dest /clean    # Remove extra files
+    """
     ctx = require_project_context()
     try:
         config = load_config(ctx)
@@ -1386,6 +1444,260 @@ def dev_env():
 
     console.print("\n[dim]Run 'mops infra up' to create cloud environments[/dim]")
     console.print("[dim]Run 'make start' to create local environment[/dim]")
+
+
+@app.command()
+def register_model(
+    model_path: Path = typer.Argument(..., help="Path to Python file containing model"),
+    class_name: str = typer.Argument(..., help="Name of model class"),
+    data: List[Path] = typer.Option([], "--data", "-d", help="Data file dependencies"),
+    code: List[Path] = typer.Option([], "--code", "-c", help="Code file dependencies"),
+    outputs: List[str] = typer.Option([], "--output", "-o", help="Model output names"),
+    model_id: Optional[str] = typer.Option(None, "--id", help="Model ID (defaults to class name)")
+):
+    """Register a model and its dependencies for provenance tracking.
+
+    Explicitly declare all files that affect model behavior. This enables
+    automatic cache invalidation when ANY dependency changes.
+
+    Examples:
+        # Register a simple model
+        mops-bundle register-model src/models/seir.py StochasticSEIR
+
+        # Register with data dependencies
+        mops-bundle register-model src/models/seir.py StochasticSEIR \\
+            --data data/demographics.csv \\
+            --data config/contact_matrix.csv
+
+        # Register with code dependencies and outputs
+        mops-bundle register-model src/models/seir.py StochasticSEIR \\
+            --code src/utils/calculations.py \\
+            --output prevalence \\
+            --output peak_infections
+    """
+    from .registry import BundleRegistry
+    import ast
+
+    ctx = require_project_context()
+    registry_path = ctx.storage_dir / "registry.yaml"
+
+    # Load existing registry or create new
+    if registry_path.exists():
+        registry = BundleRegistry.load(registry_path)
+    else:
+        registry = BundleRegistry()
+
+    # Validate model file exists
+    if not model_path.exists():
+        console.print(f"[red]Error: Model file not found: {model_path}[/red]")
+        raise typer.Exit(1)
+
+    # Validate imports in model file
+    try:
+        with model_path.open() as f:
+            tree = ast.parse(f.read())
+
+        # Find imports
+        imports = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    imports.add(alias.name.split('.')[0])
+            elif isinstance(node, ast.ImportFrom):
+                if node.module and not node.module.startswith('.'):
+                    imports.add(node.module.split('.')[0])
+
+        # Check for local imports that might be missing
+        local_modules = []
+        for imp in imports:
+            # Try to find local module file
+            possible_paths = [
+                Path(f"src/{imp}.py"),
+                Path(f"src/{imp}/__init__.py"),
+                Path(f"{imp}.py"),
+            ]
+            for path in possible_paths:
+                if path.exists() and path not in code and path != model_path:
+                    local_modules.append(path)
+
+        if local_modules:
+            console.print("[yellow]Warning: Detected imports that might be dependencies:[/yellow]")
+            for module in local_modules:
+                console.print(f"  • {module}")
+            console.print("[dim]Add with --code flag if these affect model behavior[/dim]")
+
+    except Exception as e:
+        console.print(f"[yellow]Warning: Could not validate imports: {e}[/yellow]")
+
+    # Use class name as ID if not provided
+    if model_id is None:
+        model_id = class_name.lower()
+
+    # Add to registry
+    entry = registry.add_model(
+        model_id=model_id,
+        path=model_path,
+        class_name=class_name,
+        data=data,
+        code=code,
+        outputs=outputs
+    )
+
+    # Compute digest
+    entry.model_digest = entry.compute_digest()
+
+    # Validate dependencies
+    errors = entry.validate_dependencies()
+    if errors:
+        console.print("[red]Validation errors:[/red]")
+        for error in errors:
+            console.print(f"  • {error}")
+        raise typer.Exit(1)
+
+    # Save registry
+    registry.save(registry_path)
+
+    console.print(f"✓ Model '{model_id}' registered")
+    console.print(f"  Class: {class_name}")
+    console.print(f"  Path: {model_path}")
+    if data:
+        console.print(f"  Data dependencies: {len(data)} files")
+    if code:
+        console.print(f"  Code dependencies: {len(code)} files")
+    if outputs:
+        console.print(f"  Outputs: {', '.join(outputs)}")
+    console.print(f"  Model digest: {entry.model_digest[:12]}...")
+
+
+@app.command()
+def register_target(
+    target_path: Path = typer.Argument(..., help="Path to Python file containing target"),
+    model_output: str = typer.Argument(..., help="Name of model output to use"),
+    observation: Path = typer.Argument(..., help="Path to observation data file"),
+    target_id: Optional[str] = typer.Option(None, "--id", help="Target ID (defaults to output name)")
+):
+    """Register a calibration target for model evaluation.
+
+    Links a target evaluation function with observation data and
+    specifies which model output to compare against.
+
+    Examples:
+        # Register a prevalence target
+        mops-bundle register-target src/targets/prevalence.py prevalence data/observed_cases.csv
+
+        # Register with custom ID
+        mops-bundle register-target src/targets/deaths.py deaths data/mortality.csv \\
+            --id mortality_target
+    """
+    from .registry import BundleRegistry
+
+    ctx = require_project_context()
+    registry_path = ctx.storage_dir / "registry.yaml"
+
+    # Load existing registry or create new
+    if registry_path.exists():
+        registry = BundleRegistry.load(registry_path)
+    else:
+        registry = BundleRegistry()
+
+    # Validate files exist
+    if not target_path.exists():
+        console.print(f"[red]Error: Target file not found: {target_path}[/red]")
+        raise typer.Exit(1)
+
+    if not observation.exists():
+        console.print(f"[red]Error: Observation file not found: {observation}[/red]")
+        raise typer.Exit(1)
+
+    # Use model_output as ID if not provided
+    if target_id is None:
+        target_id = model_output
+
+    # Add to registry
+    entry = registry.add_target(
+        target_id=target_id,
+        path=target_path,
+        model_output=model_output,
+        observation=observation
+    )
+
+    # Compute digests
+    entry.target_digest = entry.compute_digest()
+    obs_digest = entry.compute_observation_digest()
+
+    # Save registry
+    registry.save(registry_path)
+
+    console.print(f"✓ Target '{target_id}' registered")
+    console.print(f"  Path: {target_path}")
+    console.print(f"  Model output: {model_output}")
+    console.print(f"  Observation: {observation}")
+    console.print(f"  Target digest: {entry.target_digest[:12]}...")
+    console.print(f"  Observation digest: {obs_digest[:12]}...")
+
+
+@app.command()
+def show_registry():
+    """Show registered models and targets.
+
+    Displays the complete registry with all dependencies and digests.
+
+    Example:
+        mops-bundle show-registry
+    """
+    from .registry import BundleRegistry
+
+    ctx = require_project_context()
+    registry_path = ctx.storage_dir / "registry.yaml"
+
+    if not registry_path.exists():
+        console.print("[yellow]No registry found. Use 'register-model' to start.[/yellow]")
+        return
+
+    registry = BundleRegistry.load(registry_path)
+
+    # Validate
+    errors = registry.validate()
+    if errors:
+        console.print("[red]Registry has validation errors:[/red]")
+        for error in errors:
+            console.print(f"  • {error}")
+        console.print()
+
+    # Show models
+    if registry.models:
+        console.print("[bold]Registered Models:[/bold]")
+        for model_id, model in registry.models.items():
+            console.print(f"\n  [cyan]{model_id}[/cyan]")
+            console.print(f"    Class: {model.class_name}")
+            console.print(f"    File: {model.path}")
+            if model.outputs:
+                console.print(f"    Outputs: {', '.join(model.outputs)}")
+            if model.data:
+                console.print(f"    Data deps: {len(model.data)} files")
+                for data_file in model.data[:3]:  # Show first 3
+                    console.print(f"      • {data_file}")
+                if len(model.data) > 3:
+                    console.print(f"      ... and {len(model.data) - 3} more")
+            if model.code:
+                console.print(f"    Code deps: {len(model.code)} files")
+            if model.model_digest:
+                console.print(f"    Digest: {model.model_digest[:12]}...")
+    else:
+        console.print("[dim]No models registered[/dim]")
+
+    # Show targets
+    if registry.targets:
+        console.print("\n[bold]Registered Targets:[/bold]")
+        for target_id, target in registry.targets.items():
+            console.print(f"\n  [cyan]{target_id}[/cyan]")
+            console.print(f"    File: {target.path}")
+            console.print(f"    Output: {target.model_output}")
+            console.print(f"    Observation: {target.observation}")
+            if target.target_digest:
+                console.print(f"    Digest: {target.target_digest[:12]}...")
+    else:
+        console.print("\n[dim]No targets registered[/dim]")
 
 
 def main():
