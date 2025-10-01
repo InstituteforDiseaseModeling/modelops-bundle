@@ -6,7 +6,7 @@ from typing import Dict, Set
 from pydantic import BaseModel, Field
 
 from .core import FileInfo
-from .utils import compute_digest
+from .hashing import compute_file_digest
 
 
 class TrackedFilesSnapshot(BaseModel):
@@ -28,7 +28,7 @@ class TrackedFilesSnapshot(BaseModel):
             if path.exists():
                 files[path_str] = FileInfo(
                     path=path_str,
-                    digest=compute_digest(path),
+                    digest=compute_file_digest(path),
                     size=path.stat().st_size,
                     mtime=path.stat().st_mtime
                 )

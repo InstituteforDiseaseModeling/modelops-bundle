@@ -18,13 +18,13 @@ def compute_file_digest(path: Path) -> str:
         path: Path to file to hash
 
     Returns:
-        64-character hex hash string
+        SHA256 digest in format "sha256:xxxx"
     """
     sha256 = hashlib.sha256()
     with path.open("rb") as f:
         for chunk in iter(lambda: f.read(8192), b""):
             sha256.update(chunk)
-    return sha256.hexdigest()
+    return f"sha256:{sha256.hexdigest()}"
 
 
 def compute_composite_digest(

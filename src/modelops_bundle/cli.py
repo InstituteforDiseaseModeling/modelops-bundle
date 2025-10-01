@@ -522,11 +522,18 @@ def status(
     untracked: bool = typer.Option(False, "-u", "--untracked", help="Show untracked files"),
     untracked_only: bool = typer.Option(False, "--untracked-only", help="Show only untracked files"),
     include_ignored: bool = typer.Option(False, "--include-ignored", help="Include ignored files"),
+    files: bool = typer.Option(False, "--files", "-f", help="Show file-centric view instead of model view"),
+    details: Optional[str] = typer.Option(None, "--details", "-d", help="Show details for specific model"),
 ):
-    """Show tracked files and sync status.
+    """Show model status and sync state.
+
+    By default shows model-centric view with readiness and sync status.
+    Use --files to see the traditional file-level view.
 
     Examples:
-        mops-bundle status                  # Show tracked/modified files
+        mops-bundle status                  # Model status overview
+        mops-bundle status --files          # File-level changes
+        mops-bundle status --details SIR    # Details for specific model
         mops-bundle status -u               # Also show untracked files
         mops-bundle status --untracked-only # Only show untracked files
     """
@@ -541,6 +548,65 @@ def status(
         state = load_state(ctx)
     except FileNotFoundError:
         console.print("[red]✗[/red] Bundle not properly initialized")
+        raise typer.Exit(1)
+
+    # Model-centric view by default (unless --files or --untracked-only)
+    if not files and not untracked_only:
+        # Check if we have a model registry
+        from modelops_contracts import BundleRegistry
+        registry_path = ctx.storage_dir / "registry.yaml"
+
+        if registry_path.exists():
+            # Show model-centric view
+            from .model_status_computer import ModelStatusComputer
+            from .status_display import display_model_status, display_model_details
+
+            # Get OrasAdapter for cloud state
+            adapter = _get_oras_adapter(config, ctx)
+
+            # Compute model status
+            computer = ModelStatusComputer(ctx, adapter)
+            snapshot = computer.compute_full_status(config, config.registry_ref, config.default_tag)
+
+            if details:
+                # Show details for specific model
+                # Try to find model by ID or name
+                model = None
+                for model_id, model_state in snapshot.models.items():
+                    if model_id == details or model_state.name == details:
+                        model = model_state
+                        break
+
+                if model:
+                    display_model_details(model, console)
+                else:
+                    console.print(f"[red]Model not found: {details}[/red]")
+                    console.print("[dim]Available models:[/dim]")
+                    for model_id, model_state in snapshot.models.items():
+                        console.print(f"  • {model_id} ({model_state.name})")
+                    raise typer.Exit(1)
+            else:
+                # Show overview
+                display_model_status(snapshot, console)
+
+            # Still show untracked if requested
+            if untracked:
+                from .working_state import scan_untracked
+                untracked_files = scan_untracked(ctx, tracked, include_ignored=include_ignored)
+                if untracked_files:
+                    console.print("\n[bold]Untracked files:[/bold]")
+                    for file in untracked_files[:10]:
+                        status = "[dim](ignored)[/dim]" if file.ignored else "[yellow]?[/yellow] untracked"
+                        console.print(f"  {status} {file.path}")
+                    if len(untracked_files) > 10:
+                        console.print(f"  [dim]... and {len(untracked_files) - 10} more[/dim]")
+                    console.print("\n[dim]Add files with: mops-bundle add <path>[/dim]")
+
+            return
+
+    # Handle --details without registry
+    if details:
+        console.print("[yellow]No model registry found. Use 'register-model' to register models.[/yellow]")
         raise typer.Exit(1)
     
     # Display bundle info (unless --untracked-only)
@@ -1647,14 +1713,14 @@ def register_model(
             outputs=outputs
         )
 
-        # Note: compute_digest() and validate_dependencies() don't exist on base ModelEntry
-        # Just set a placeholder digest for now
-        if not entry.model_digest:
-            # Could compute file hash here if needed
-            pass
+        # Compute and store digests for the model and its dependencies
+        entry.compute_digest(base_path=ctx.root)
+        entry.compute_dependency_digests(base_path=ctx.root)
 
         registered_count += 1
         console.print(f"✓ Registered {class_name} as '{reg_id}'")
+        if entry.model_digest:
+            console.print(f"  Model digest: {entry.model_digest[:16]}...")
 
     # Save registry
     registry.save(registry_path)

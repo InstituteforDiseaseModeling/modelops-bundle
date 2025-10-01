@@ -306,8 +306,8 @@ class LocalCAS:
                 fetch_to_path(str(tmppath))
                 
                 # Verify digest
-                from .utils import compute_digest
-                actual = compute_digest(tmppath)
+                from .hashing import compute_file_digest
+                actual = compute_file_digest(tmppath)
                 if actual != digest:
                     raise ValueError(
                         f"Digest mismatch for {digest}: "

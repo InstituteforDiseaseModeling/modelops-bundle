@@ -1,17 +1,9 @@
 """Utility functions for modelops-bundle."""
 
 from pathlib import Path
-import hashlib
 
-
-def compute_digest(path: Path) -> str:
-    """Compute SHA256 digest of a file."""
-    sha256 = hashlib.sha256()
-    with path.open("rb") as f:
-        # Read in 8KB chunks - optimal for I/O (fits L1 cache, minimizes syscalls)
-        for chunk in iter(lambda: f.read(8192), b""):
-            sha256.update(chunk)
-    return f"sha256:{sha256.hexdigest()}"
+# Backward compatibility: compute_digest moved to hashing module
+from .hashing import compute_file_digest as compute_digest
 
 
 def humanize_size(size: float) -> str:

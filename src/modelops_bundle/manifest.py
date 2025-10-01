@@ -54,17 +54,6 @@ def capture_environment() -> Optional[Dict[str, Any]]:
     return env.to_json()
 
 
-def compute_file_hash(file_path: Path) -> str:
-    """Compute SHA256 hash of a file.
-
-    Args:
-        file_path: Path to file
-
-    Returns:
-        Hex-encoded SHA256 hash
-    """
-    # Use simple file hashing for all files now (no token hashing)
-    return compute_file_digest(file_path)
 
 
 def read_pyproject_config() -> Optional[Dict[str, Any]]:
@@ -203,7 +192,7 @@ def build_manifest(
     components = []
     for file_path in sorted(all_files):
         if file_path.exists():
-            file_hash_val = compute_file_hash(file_path)
+            file_hash_val = compute_file_digest(file_path)
             manifest["files"][str(file_path)] = {
                 "sha256": file_hash_val,
                 "size": file_path.stat().st_size

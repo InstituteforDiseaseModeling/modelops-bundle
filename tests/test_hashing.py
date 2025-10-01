@@ -47,7 +47,8 @@ class TestFileHashing:
 
         # Should hash without error
         hash_val = compute_file_digest(binary_file)
-        assert len(hash_val) == 64  # SHA256 hex digest length
+        assert hash_val.startswith("sha256:")
+        assert len(hash_val) == 71  # "sha256:" (7) + 64 hex chars
 
 
 class TestCompositeDigest:

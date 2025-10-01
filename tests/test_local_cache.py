@@ -89,7 +89,7 @@ class TestEnsurePresent:
         """Mock compute_digest function."""
         # The import in local_cache.py is: from .utils import compute_digest
         # So we need to patch where it's used, not where it's defined
-        with patch("modelops_bundle.utils.compute_digest") as mock:
+        with patch("modelops_bundle.hashing.compute_file_digest") as mock:
             # Default to returning the expected digest
             mock.return_value = "sha256:" + "a" * 64
             yield mock
@@ -98,11 +98,11 @@ class TestEnsurePresent:
         """Test that ensure_present downloads missing object."""
         digest = "sha256:" + "a" * 64
         content = b"test content"
-        
+
         def fetch(path):
             Path(path).write_bytes(content)
-        
-        with patch("modelops_bundle.utils.compute_digest", return_value=digest):
+
+        with patch("modelops_bundle.hashing.compute_file_digest", return_value=digest):
             result = cas.ensure_present(digest, fetch)
         
         assert result.exists()
@@ -137,7 +137,7 @@ class TestEnsurePresent:
         def fetch(path):
             Path(path).write_bytes(b"wrong content")
         
-        with patch("modelops_bundle.utils.compute_digest", return_value=actual):
+        with patch("modelops_bundle.hashing.compute_file_digest", return_value=actual):
             with pytest.raises(ValueError, match="Digest mismatch"):
                 cas.ensure_present(expected, fetch)
         
@@ -290,7 +290,7 @@ class TestConcurrency:
             Path(path).write_bytes(content)
         
         def worker():
-            with patch("modelops_bundle.utils.compute_digest", return_value=digest):
+            with patch("modelops_bundle.hashing.compute_file_digest", return_value=digest):
                 cas.ensure_present(digest, fetch)
         
         # Start multiple threads

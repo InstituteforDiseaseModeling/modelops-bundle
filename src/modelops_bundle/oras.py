@@ -25,7 +25,7 @@ from .errors import (
     UnsupportedArtifactError,
 )
 from .storage_models import BundleIndex, BundleFileEntry, StorageType
-from .utils import compute_digest
+from .hashing import compute_file_digest
 
 # OCI media types for manifest accept headers
 OCI_ACCEPT = ",".join([
@@ -790,7 +790,7 @@ class OrasAdapter:
                     _atomic_download(download_blob, dst)
                 
                 # Verify digest AFTER atomic replace (on the file user now sees)
-                actual_digest = compute_digest(dst)
+                actual_digest = compute_file_digest(dst)
                 if actual_digest != entry.digest:
                     dst.unlink(missing_ok=True)  # Remove corrupted file
                     raise DigestMismatchError(entry.path, entry.digest, actual_digest)

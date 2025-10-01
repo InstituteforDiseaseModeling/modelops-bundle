@@ -147,7 +147,8 @@ class SimpleModel:
         for file_path, file_info in manifest["files"].items():
             assert "sha256" in file_info
             assert "size" in file_info
-            assert len(file_info["sha256"]) == 64
+            assert file_info["sha256"].startswith("sha256:")
+            assert len(file_info["sha256"]) == 71  # "sha256:" + 64 hex chars
 
     def test_deterministic_ordering(self, tmp_path):
         """Test that component ordering doesn't affect digest."""
