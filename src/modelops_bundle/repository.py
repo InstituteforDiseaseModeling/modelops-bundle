@@ -7,14 +7,13 @@ workers use to fetch bundles from OCI registries.
 from pathlib import Path
 from typing import Tuple, Optional
 import logging
-import os
-import tempfile
 
 from .core import BundleConfig
-from .ops import ensure_local
-from .context import ProjectContext
 from .errors import NotFoundError
 from .local_cache import LocalCAS
+from .oras import OrasAdapter
+from .auth import get_auth_provider
+from .storage_models import StorageType
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +76,9 @@ class ModelOpsBundleRepository:
             cache_dir=str(self.cache_dir)  # Use our cache directory
         )
 
-        # We'll use ProjectContext only when needed (for environment, etc)
-        self._ctx = None
+        # Create OrasAdapter for registry operations
+        self._auth_provider = None
+        self._adapter = None
 
     def ensure_local(self, bundle_ref: str) -> Tuple[str, Path]:
         """Ensure bundle is available locally.
@@ -125,16 +125,42 @@ class ModelOpsBundleRepository:
         logger.info(f"Pulling bundle {digest[:12]} from registry {self.registry_ref}")
 
         try:
-            # Build full reference with registry
-            full_ref = f"{self.registry_ref}@sha256:{digest}"
+            # Ensure we have auth and adapter initialized
+            if self._auth_provider is None:
+                self._auth_provider = get_auth_provider(self.registry_ref)
+            if self._adapter is None:
+                self._adapter = OrasAdapter(
+                    auth_provider=self._auth_provider,
+                    registry_ref=self.registry_ref,
+                    insecure=self.insecure
+                )
 
-            # Use ensure_local from ops to pull and extract
-            result = ensure_local(
-                config=self.config,
-                ref=full_ref,
-                dest=bundle_dir,
-                mirror=True,  # Clean extraction
-                ctx=self._ctx
+            # Get the bundle index from the manifest
+            logger.debug(f"Getting index for sha256:{digest}")
+            index = self._adapter.get_index(self.registry_ref, f"sha256:{digest}")
+
+            # Get list of files to pull
+            entries = list(index.files.values())
+
+            # Check if we need blob storage (we don't for inline storage)
+            blob_store = None
+            if any(e.storage == StorageType.BLOB for e in entries):
+                # For workers, we don't expect BLOB storage, but handle gracefully
+                logger.warning("Bundle contains BLOB storage entries, may fail if blob store not configured")
+
+            # Ensure destination exists
+            bundle_dir.mkdir(parents=True, exist_ok=True)
+
+            # Pull all files directly to destination
+            # Use LocalCAS for caching if available
+            self._adapter.pull_selected(
+                registry_ref=self.registry_ref,
+                digest=f"sha256:{digest}",
+                entries=entries,
+                output_dir=bundle_dir,
+                blob_store=blob_store,
+                cas=self.cas,
+                link_mode="auto"
             )
 
             if not bundle_dir.exists():
