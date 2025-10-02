@@ -2,7 +2,7 @@
 
 [![Tests](https://github.com/vsbuffalo/modelops-bundle/actions/workflows/tests.yml/badge.svg)](https://github.com/vsbuffalo/modelops-bundle/actions/workflows/tests.yml)
 
-A git-like workflow for managing, building, and deploying model bundles to ModelOps infrastructure.
+A git-like workflow for managing ML model bundles with integrated model registry capabilities.
 
 ## Installation
 
@@ -19,124 +19,186 @@ uv pip install -e .
 ## Quick Start
 
 ```bash
-# Initialize a new project
+# Initialize a new bundle project
 mops-bundle init my-project
 
-# Or initialize current directory
-mops-bundle init
+# Register a model from Python file
+mops-bundle register-model src/model.py:StochasticSIR --data data/
 
-# Add files to bundle
-mops-bundle add src/ data/ config.yaml
+# Check status with registered models
+mops-bundle status
 
-# Push bundle to registry
+# Push bundle with model registry to cloud
 mops-bundle push
 ```
 
-## Environment Setup
+## Core Concepts
 
-ModelOps Bundle uses environment configurations from `~/.modelops/bundle-env/` which are automatically created when you provision ModelOps infrastructure with `mops infra up`.
+### Model Registry
 
-For local development, start the Docker services:
+ModelOps Bundle includes an integrated model registry that tracks models, their dependencies, and metadata. The registry travels WITH the bundle (in `.modelops-bundle/registry.yaml`), ensuring reproducibility and versioning.
+
+### Bundle Structure
+
+A bundle contains:
+- **Model code**: Python files with simulation classes
+- **Data files**: Input data referenced by models
+- **Registry metadata**: Model definitions and dependencies
+- **Configuration**: Bundle settings and cloud endpoints
+
+## Model Registration Workflow
+
+### 1. Register Models
+
+Register simulation models from your Python code:
+
 ```bash
-# From modelops-bundle/dev directory
-make start  # Starts local registry and storage
+# Register a single model class
+mops-bundle register-model src/model.py:DeterministicSIR --data data/
+
+# Register with multiple data files
+mops-bundle register-model src/model.py:StochasticSIR --data data/input.csv data/params.json
+
+# Register multiple models at once
+mops-bundle register-model src/model.py:NetworkSIR src/model.py:DeterministicSIR --data data/
 ```
 
-## Commands
+### 2. View Model Status
 
-### init
-Create a new bundle project or initialize existing directory.
+Check the status of your registered models:
 
 ```bash
-# Create new project directory
-mops-bundle init my-project
+> mops-bundle status
 
-# Initialize current directory
-mops-bundle init
+Bundle: modelopsdevacrvsb.azurecr.io/epi_model:latest
+Cloud sync: ✓ Up to date
 
-# Customize storage threshold
-mops-bundle init my-project --threshold 100
+                    Registered Models (3)
+
+Model               Status    Dependencies    Last Changed    Cloud
+DeterministicSIR    ⚠ Stale   1 changed      7 hours ago     Synced
+NetworkSIR          ⚠ Stale   1 changed      7 hours ago     Synced
+StochasticSIR       ⚠ Stale   1 changed      7 hours ago     Synced
+
+Issues requiring attention:
+  • StochasticSIR: Modified: data/data.csv
+  • DeterministicSIR: Modified: data/data.csv
+  • NetworkSIR: Modified: data/data.csv
+
+Run 'mops-bundle status --details <model>' for specific model info
+Run 'mops-bundle status --files' for file-level status
 ```
 
-Options:
-- `--threshold`: Size threshold in MB for blob storage (default: 50MB)
-- `--env`: Environment to use (default: dev)
-- `--tag`: Default tag (default: latest)
+### 3. View Detailed Model Information
 
-### add
-Add files or directories to tracking. Directories are added recursively.
+Get detailed information about a specific model:
+
+```bash
+> mops-bundle status --details DeterministicSIR
+
+Model: DeterministicSIR
+Path: src/model.py
+Entrypoint: model:DeterministicSIR
+Status: ⚠ Stale - dependencies modified
+
+Model Digest:
+    Local:  sha256:52a7275f2...
+    Cloud:  sha256:a1b8716ee... (differs)
+
+Dependencies:
+    Model File:
+      ✓ src/model.py (5.6 KB, 2025-09-30 10:31:32.764988)
+    Data Files:
+      ⚠ data/data.csv (447.0 B, 2025-09-30 19:17:18.164177)
+          Expected: sha256:688c7a30b...
+          Actual:   sha256:a617a930f...
+    Code Files: None
+
+Cloud State:
+    Sync: Local changes not pushed
+
+Issues:
+  • Modified: data/data.csv
+  • Local changes not pushed - run 'push' to sync
+```
+
+### 4. Push to Cloud
+
+Push your bundle with registered models to the cloud:
+
+```bash
+> mops-bundle push
+Analyzing changes...
+↑ 2 files to upload (1.7 KB), 1 unchanged
+
+Changes to push:
+  ↑ .modelops-bundle/registry.yaml (1.3 KB) → OCI
+  ↑ data/data.csv (447.0 B) → OCI
+
+Pushing to modelopsdevacrvsb.azurecr.io/epi_model:latest...
+Successfully pushed modelopsdevacrvsb.azurecr.io/epi_model:latest
+✓ Pushed successfully
+Digest: sha256:8ef7a2be7...
+```
+
+## Lower-Level Bundle Operations
+
+For fine-grained control over bundle contents, use the file-level operations:
+
+### Add Files
 
 ```bash
 # Add specific files
-mops-bundle add src/model.py data/config.yaml
+mops-bundle add src/utils.py config/settings.yaml
 
-# Add entire directories
+# Add entire directories recursively
 mops-bundle add src/ data/
 
 # Add everything (respects .modelopsignore)
 mops-bundle add .
 
 # Force-add ignored files
-mops-bundle add --force ignored.tmp
+mops-bundle add --force temp/debug.log
 ```
 
-Options:
-- `--force`: Add files even if they're ignored
-
-### remove
-Remove files from tracking (doesn't delete from disk unless --rm is used).
+### Remove Files
 
 ```bash
-# Stop tracking files
+# Stop tracking files (keeps on disk)
 mops-bundle remove src/old_model.py
 
 # Untrack AND delete files
 mops-bundle remove --rm tmp/
 ```
 
-Options:
-- `--rm`: Also delete the files from disk
-
-### status
-Show tracked files and their sync status.
+### File Status
 
 ```bash
-# Show tracked and modified files
-mops-bundle status
+# Show all tracked files
+mops-bundle status --files
 
-# Also show untracked files
+# Show untracked files
 mops-bundle status -u
 
-# Only show untracked files
+# Show only untracked files
 mops-bundle status --untracked-only
 ```
 
-Options:
-- `-u, --untracked`: Show untracked files
-- `--untracked-only`: Show only untracked files
-- `--include-ignored`: Include ignored files
+## Environment Setup
 
-### push
-Push bundle to registry. Files larger than threshold (default 50MB) use blob storage.
+ModelOps Bundle uses environment configurations from `~/.modelops/bundle-env/` which are automatically created when you provision ModelOps infrastructure with `mops infra up`.
 
+For local development:
 ```bash
-# Push to default tag
-mops-bundle push
-
-# Push with specific tag
-mops-bundle push --tag v1.2.3
-
-# Preview what would be pushed
-mops-bundle push --dry-run
+# From modelops-bundle/dev directory
+make start  # Starts local registry and storage
 ```
 
-Options:
-- `--tag`: Tag to push (defaults to config default_tag)
-- `--dry-run`: Show what would be pushed without pushing
-- `--force`: Push even if tag has moved (bypass race protection)
+## Additional Commands
 
-### pull
-Pull bundle from registry. Won't overwrite local changes by default.
+### Pull Bundle
+
+Pull bundle from registry without overwriting local changes:
 
 ```bash
 # Pull latest version
@@ -147,22 +209,14 @@ mops-bundle pull --tag v1.2.3
 
 # Overwrite local changes
 mops-bundle pull --overwrite
-
-# Also restore deleted files
-mops-bundle pull --restore-deleted
 ```
 
-Options:
-- `--tag`: Tag to pull (defaults to config default_tag)
-- `--overwrite`: Overwrite local changes
-- `--restore-deleted`: Restore files that were deleted locally
-- `--dry-run`: Show what would be pulled without pulling
+### View Manifests
 
-### manifest
-List and inspect registry tags.
+List and inspect registry tags:
 
 ```bash
-# List all tags and manifests
+# List all tags
 mops-bundle manifest
 
 # Show specific tag details
@@ -172,13 +226,9 @@ mops-bundle manifest v1.2.3
 mops-bundle manifest --tags-only
 ```
 
-Options:
-- `--tags-only`: List only tag names
-- `--full`: Show full digests
-- `--all`: Show all manifests (no filtering)
+### Diff Changes
 
-### diff
-Show differences between local and remote bundles.
+Compare local and remote bundles:
 
 ```bash
 # Compare with latest
@@ -188,11 +238,9 @@ mops-bundle diff
 mops-bundle diff --tag v1.2
 ```
 
-Options:
-- `--tag`: Tag to compare with
+### Deploy Bundle
 
-### ensure
-Materialize bundle to another directory (useful for deployments).
+Materialize bundle to another directory (useful for deployments):
 
 ```bash
 # Download latest to deployment directory
@@ -203,55 +251,6 @@ mops-bundle ensure --ref v1.2 --dest /tmp
 
 # Mirror mode (removes extra files)
 mops-bundle ensure --mirror --dest /clean
-```
-
-Options:
-- `--ref`: Tag or sha256 digest to download
-- `--dest`: Destination directory (required)
-- `--mirror`: Prune files in dest that aren't in bundle
-- `--dry-run`: Preview what would happen
-
-### status
-Show current bundle status.
-
-```bash
-mops-bundle status
-```
-
-### diff
-Show differences between local and remote bundle.
-
-```bash
-# Compare with latest tag
-mops-bundle diff
-
-# Compare with specific tag
-mops-bundle diff --tag v1.0
-```
-
-### manifest
-Inspect registry manifests and tags.
-
-```bash
-# List all tags
-mops-bundle manifest
-
-# Inspect specific manifest
-mops-bundle manifest inspect --tag v1.0
-
-# Show manifest with limited entries
-mops-bundle manifest --limit 5
-```
-
-### ensure
-Materialize a bundle into a destination directory (useful for cloud workstations).
-
-```bash
-# Pull bundle to specific directory
-mops-bundle ensure /path/to/destination
-
-# Pull specific tag
-mops-bundle ensure /path/to/destination --tag v1.0
 ```
 
 ## Configuration
@@ -268,7 +267,26 @@ storage:
   threshold_bytes: 52428800  # 50MB
 ```
 
-This is created automatically when you run `mops-bundle init`.
+Model registry is stored in `.modelops-bundle/registry.yaml`:
+
+```yaml
+version: '1.0'
+models:
+  model_stochasticsir:
+    entrypoint: model:StochasticSIR
+    path: src/model.py
+    class_name: StochasticSIR
+    scenarios: []
+    parameters: []
+    outputs: []
+    data:
+    - data/data.csv
+    data_digests:
+      data/data.csv: sha256:4f964a58ca00...
+    model_digest: sha256:448dc295027b...
+```
+
+Both files are created automatically and travel with the bundle for reproducibility.
 
 ## Storage Modes
 
@@ -276,3 +294,13 @@ This is created automatically when you run `mops-bundle init`.
 - **Blob**: Store in blob storage with registry manifest pointing to blobs
 - **Auto**: Automatically choose based on size (default 50MB threshold)
 
+## Integration with ModelOps
+
+The model registry enables seamless integration with ModelOps infrastructure:
+
+1. **Science Phase**: Scientists register models in bundles
+2. **Bundle Phase**: Push bundles with registry to OCI/cloud storage
+3. **Execution Phase**: ModelOps workers fetch bundles and use registry to discover models
+4. **Simulation**: Models are executed with parameters from Calabaria studies
+
+The registry travels WITH the bundle, ensuring that model metadata is always versioned alongside the code and data it describes.

@@ -936,7 +936,7 @@ def push(
     try:
         manifest_digest = ops_push(config, tracked, tag=tag, ctx=ctx, force=force)
         console.print("[green]✓[/green] Pushed successfully")
-        console.print(f"[dim]Digest: {manifest_digest[:16]}...[/dim]")
+        console.print(f"[dim]Digest: {manifest_digest}[/dim]")
     except TagMovedError as e:
         # Specific handling for tag race errors
         console.print(f"[red]✗[/red] {e}")

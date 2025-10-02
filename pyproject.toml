@@ -22,6 +22,9 @@ dependencies = [
 modelops-bundle = "modelops_bundle.cli:main"
 mops-bundle = "modelops_bundle.cli:main"
 
+[project.entry-points."modelops.bundle_repos"]
+modelops_bundle = "modelops_bundle.repository:ModelOpsBundleRepository"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
