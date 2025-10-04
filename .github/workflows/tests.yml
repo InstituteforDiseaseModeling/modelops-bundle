@@ -17,6 +17,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          path: modelops-bundle
+
+      - name: Checkout modelops-contracts
+        uses: actions/checkout@v4
+        with:
+          repository: vsbuffalo/modelops-contracts
+          path: modelops-contracts
+          token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
 
       - name: Set up uv with Python ${{ matrix.python-version }}
         uses: astral-sh/setup-uv@v5
@@ -29,16 +38,22 @@ jobs:
 
       - name: Sync dependencies
         run: |
+          cd modelops-bundle
           uv sync --frozen
 
       - name: Start dev services
-        run: docker compose -f dev/docker-compose.yml up -d
+        run: |
+          cd modelops-bundle
+          docker compose -f dev/docker-compose.yml up -d
 
       - name: Setup local env file
-        run: bash dev/setup_local_env.sh
+        run: |
+          cd modelops-bundle
+          bash dev/setup_local_env.sh
 
       - name: Run unit tests
         run: |
+          cd modelops-bundle
           # Run non-integration tests (fast)
           uv run pytest -m "not integration" --cov=src/modelops_bundle --cov-report=term-missing -v
         env:
@@ -48,6 +63,7 @@ jobs:
 
       - name: Run integration tests
         run: |
+          cd modelops-bundle
           # Run integration tests with local registry
           uv run pytest -m integration -v
         env:

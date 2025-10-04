@@ -100,9 +100,16 @@ class ModelOpsBundleRepository:
             NotFoundError: If bundle doesn't exist
             ValueError: If bundle_ref format is invalid
         """
-        # Validate and parse the reference
-        if not bundle_ref.startswith("sha256:"):
-            raise ValueError(f"Bundle ref must be sha256 digest, got: {bundle_ref}")
+        # Parse repository and digest from bundle_ref
+        repository = None
+        if "@" in bundle_ref:
+            # Format: repository@sha256:digest
+            repository, digest_part = bundle_ref.split("@", 1)
+            if not digest_part.startswith("sha256:"):
+                raise ValueError(f"Bundle ref must contain sha256 digest, got: {bundle_ref}")
+            bundle_ref = digest_part
+        elif not bundle_ref.startswith("sha256:"):
+            raise ValueError(f"Bundle ref must be sha256 digest or repository@sha256:digest, got: {bundle_ref}")
 
         digest = bundle_ref.split(":", 1)[1]
         if len(digest) != 64:
@@ -122,7 +129,9 @@ class ModelOpsBundleRepository:
             return bundle_ref, bundle_dir
 
         # Not in cache, need to pull from registry
-        logger.info(f"Pulling bundle {digest[:12]} from registry {self.registry_ref}")
+        # Use repository-specific registry ref if repository was provided
+        effective_registry = f"{self.registry_ref}/{repository}" if repository else self.registry_ref
+        logger.info(f"Pulling bundle {digest[:12]} from registry {effective_registry}")
 
         try:
             # Ensure we have auth and adapter initialized
@@ -137,7 +146,7 @@ class ModelOpsBundleRepository:
 
             # Get the bundle index from the manifest
             logger.debug(f"Getting index for sha256:{digest}")
-            index = self._adapter.get_index(self.registry_ref, f"sha256:{digest}")
+            index = self._adapter.get_index(effective_registry, f"sha256:{digest}")
 
             # Get list of files to pull
             entries = list(index.files.values())
@@ -154,7 +163,7 @@ class ModelOpsBundleRepository:
             # Pull all files directly to destination
             # Use LocalCAS for caching if available
             self._adapter.pull_selected(
-                registry_ref=self.registry_ref,
+                registry_ref=effective_registry,
                 digest=f"sha256:{digest}",
                 entries=entries,
                 output_dir=bundle_dir,

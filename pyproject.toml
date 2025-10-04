@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "modelops-contracts",
+    # "modelops-contracts @ git+https://github.com/vsbuffalo/modelops-contracts.git",
     "oras @ git+https://github.com/vsbuffalo/oras-py.git",
     "pathspec>=0.12.1",
     "portalocker>=3.2.0",

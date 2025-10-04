@@ -234,11 +234,13 @@ class OrasAdapter:
             password_or_token = credential.secret
 
             logger = logging.getLogger(__name__)
-            logger.debug(f"Authenticating to registry: {registry_host}")
+            logger.info(f"Authenticating to registry: {registry_host}")
+            logger.info(f"  Username: {username[:20]}..." if len(username) > 20 else f"  Username: {username}")
+            logger.info(f"  Password/Token length: {len(password_or_token) if password_or_token else 0}")
 
             # Create OrasClient if needed
             if self.client is None:
-                logger.debug(f"Creating OrasClient for {registry_host}")
+                logger.info(f"Creating OrasClient for {registry_host} (insecure={self.insecure})")
                 self.client = oras.client.OrasClient(insecure=self.insecure)
 
             # For ACR, we now have an access token (not refresh token)
@@ -247,11 +249,11 @@ class OrasAdapter:
                 # Use token auth for ACR with access token
                 self.client.auth.set_token_auth(password_or_token)
                 self._acr_token = password_or_token
-                logger.debug(f"Using ACR token authentication for {registry_host}")
+                logger.info(f"Using ACR token authentication for {registry_host}")
             else:
                 # Use regular basic auth
                 self.client.auth.set_basic_auth(username, password_or_token)
-                logger.debug(f"Using basic authentication for {registry_host}")
+                logger.info(f"Using basic authentication for {registry_host}")
 
             # Mark as authenticated
             self._authenticated_registries.add(registry_host)
@@ -347,15 +349,20 @@ class OrasAdapter:
         # Build the manifest URL path
         get_manifest_url = f"{self.client.prefix}://{container.manifest_url()}"
 
+        logger = logging.getLogger(__name__)
+        logger.info(f"Fetching manifest from: {get_manifest_url}")
+
         last_error = None
         for attempt in range(retries):
             try:
+                logger.info(f"  Attempt {attempt + 1}/{retries}")
                 # Use oras-py's do_request which handles auth for us
                 resp = self.client.do_request(
                     get_manifest_url,
                     "GET",
                     headers={"Accept": OCI_ACCEPT},
                 )
+                logger.info(f"  Response status: {resp.status_code}")
                 
                 # Check response status
                 if resp.status_code == 404:
@@ -377,14 +384,26 @@ class OrasAdapter:
                 if raw:
                     try:
                         manifest = resp.json()
-                    except json.JSONDecodeError:
+                    except json.JSONDecodeError as e:
                         # Handle non-JSON responses (e.g., HTML error pages)
                         content_type = resp.headers.get('content-type', 'unknown')
+
+                        # Log debug information
+                        logger = logging.getLogger(__name__)
+                        logger.error(f"JSON parse error for {target}")
+                        logger.error(f"  URL: {get_manifest_url}")
+                        logger.error(f"  Status: {resp.status_code}")
+                        logger.error(f"  Content-Type: {content_type}")
+                        logger.error(f"  Response headers: {dict(resp.headers)}")
+                        logger.error(f"  Response (first 500 chars): {raw[:500].decode('utf-8', errors='replace')}")
+                        logger.error(f"  JSON error: {e}")
+
                         if resp.status_code in (401, 403):
                             raise AuthError(f"Authentication failed for {target}")
                         raise NetworkError(
                             f"Registry returned invalid response for {target}: "
-                            f"expected JSON but got {content_type}"
+                            f"expected JSON but got {content_type}. "
+                            f"Response: {raw[:200].decode('utf-8', errors='replace')}"
                         )
                 else:
                     manifest = {}

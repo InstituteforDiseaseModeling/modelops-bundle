@@ -81,30 +81,48 @@ class TestModelOpsBundleRepository:
             cache_structure="digest_short"
         )
 
-        # Mock ensure_local from ops module
-        with patch("modelops_bundle.repository.ensure_local") as mock_ensure:
-            # Configure mock to simulate successful pull
-            def side_effect(*args, **kwargs):
-                # Create the bundle directory when ensure_local is called
-                dest = kwargs.get("dest")
-                if dest:
-                    dest.mkdir(parents=True, exist_ok=True)
-                    (dest / "test.txt").write_text("pulled content")
-                return MagicMock()
+        # Mock OrasAdapter methods
+        with patch("modelops_bundle.repository.OrasAdapter") as mock_oras_class:
+            # Create mock adapter instance
+            mock_adapter = MagicMock()
+            mock_oras_class.return_value = mock_adapter
 
-            mock_ensure.side_effect = side_effect
+            # Mock get_index to return a mock index
+            mock_index = MagicMock()
+            mock_index.files = {
+                "test.txt": MagicMock(storage="inline")
+            }
+            mock_adapter.get_index.return_value = mock_index
+
+            # Mock pull_selected to create the test file
+            def pull_selected_side_effect(*args, **kwargs):
+                output_dir = kwargs.get("output_dir")
+                if output_dir:
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    (output_dir / "test.txt").write_text("pulled content")
+
+            mock_adapter.pull_selected.side_effect = pull_selected_side_effect
 
             # Call ensure_local (bundle is NOT cached yet)
             ref, path = repo.ensure_local(bundle_ref)
 
-            # Verify ensure_local was called with correct args
-            mock_ensure.assert_called_once()
-            call_args = mock_ensure.call_args
-            assert call_args[1]["ref"] == f"localhost:5000/test@sha256:{digest}"
+            # Verify OrasAdapter was initialized
+            mock_oras_class.assert_called_once()
+
+            # Verify get_index was called with correct args
+            mock_adapter.get_index.assert_called_once_with(
+                "localhost:5000/test",
+                f"sha256:{digest}"
+            )
+
+            # Verify pull_selected was called
+            mock_adapter.pull_selected.assert_called_once()
+            pull_args = mock_adapter.pull_selected.call_args[1]
+            assert pull_args["registry_ref"] == "localhost:5000/test"
+            assert pull_args["digest"] == f"sha256:{digest}"
 
             bundle_dir = repo.bundles_dir / digest[:12]
-            assert call_args[1]["dest"] == bundle_dir
-            assert call_args[1]["mirror"] is True
+            assert pull_args["output_dir"] == bundle_dir
 
             # Verify results
             assert ref == bundle_ref
