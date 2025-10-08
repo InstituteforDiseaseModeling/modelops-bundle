@@ -21,11 +21,24 @@ name = "{project_name}"
 version = "0.1.0"
 description = "A ModelOps bundle"
 readme = "README.md"
-requires-python = ">=3.11"
-dependencies = []
+requires-python = ">=3.13"
+dependencies = [
+    "modelops-contracts @ git+https://github.com/vsbuffalo/modelops-contracts.git",
+    "modelops-calabaria @ git+https://github.com/vsbuffalo/modelops-calabaria.git",
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "polars>=0.20.0"
+]
 
 [tool.modelops-bundle]
 # Models will be added here by 'mops-bundle discover --save'
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+only-include = ["models", "*.py", "*.toml", "*.txt", "*.md"]
 
 [build-system]
 requires = ["hatchling"]
