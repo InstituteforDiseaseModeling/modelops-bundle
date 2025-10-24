@@ -1741,25 +1741,27 @@ def register_model(
 
 @app.command()
 def register_target(
-    target_path: Path = typer.Argument(..., help="Path to Python file containing target"),
-    model_output: str = typer.Argument(..., help="Name of model output to use"),
-    observation: Path = typer.Argument(..., help="Path to observation data file"),
-    target_id: Optional[str] = typer.Option(None, "--id", help="Target ID (defaults to output name)")
+    target_path: Path = typer.Argument(..., help="Path to Python file containing target(s)"),
+    targets: Optional[List[str]] = typer.Option(None, "--target", "-t", help="Specific target names to register (auto-discovers if not provided)"),
+    exclude: Optional[List[str]] = typer.Option(None, "--exclude", "-e", help="Target names to exclude from auto-discovery"),
+    confirm: bool = typer.Option(True, "--confirm/--no-confirm", help="Confirm auto-discovered targets")
 ):
-    """Register a calibration target for model evaluation.
+    """Register calibration target(s) for model evaluation.
 
-    Links a target evaluation function with observation data and
-    specifies which model output to compare against.
+    Auto-discovers functions decorated with @calibration_target and extracts
+    their data dependencies automatically from the decorator metadata.
 
     Examples:
-        # Register a prevalence target
-        mops-bundle register-target src/targets/prevalence.py prevalence data/observed_cases.csv
+        # Auto-discover all targets in file
+        mops-bundle register-target src/targets/prevalence.py
 
-        # Register with custom ID
-        mops-bundle register-target src/targets/deaths.py deaths data/mortality.csv \\
-            --id mortality_target
+        # Register specific target only
+        mops-bundle register-target src/targets/all_targets.py --target prevalence_target
+
+        # Auto-discover but exclude some
+        mops-bundle register-target src/targets/all_targets.py --exclude test_target
     """
-    from modelops_contracts import BundleRegistry
+    from modelops_contracts import BundleRegistry, discover_target_functions
 
     ctx = require_project_context()
     registry_path = ctx.storage_dir / "registry.yaml"
@@ -1770,26 +1772,90 @@ def register_target(
     else:
         registry = BundleRegistry()
 
-    # Validate files exist
+    # Validate target file exists
     if not target_path.exists():
         console.print(f"[red]Error: Target file not found: {target_path}[/red]")
         raise typer.Exit(1)
 
-    if not observation.exists():
-        console.print(f"[red]Error: Observation file not found: {observation}[/red]")
-        raise typer.Exit(1)
+    # Determine which targets to register
+    targets_to_register = []
 
-    # Use model_output as ID if not provided
-    if target_id is None:
-        target_id = model_output
+    if not targets:
+        # Auto-discover targets
+        try:
+            discovered = discover_target_functions(target_path)
 
-    # Add to registry
-    registry.add_target(
-        target_id=target_id,
-        path=target_path,
-        model_output=model_output,
-        observation=observation
-    )
+            # Filter out excluded targets
+            if exclude:
+                discovered = [(name, metadata) for name, metadata in discovered
+                             if name not in exclude]
+
+            if not discovered:
+                console.print("[yellow]No @calibration_target decorated functions found in file[/yellow]")
+                console.print("[dim]Ensure your targets are decorated with @calibration_target[/dim]")
+                return
+
+            # Show what was discovered and confirm
+            console.print(f"[cyan]Discovered {len(discovered)} target(s):[/cyan]")
+            for target_name, metadata in discovered:
+                model_output = metadata.get('model_output', 'unknown')
+                data_files = metadata.get('data', {})
+                console.print(f"  • {target_name} (model_output: {model_output}, data: {len(data_files)} files)")
+
+            if confirm:
+                if not typer.confirm("\nRegister all discovered targets?"):
+                    console.print("[yellow]Registration cancelled[/yellow]")
+                    return
+
+            targets_to_register = discovered
+
+        except Exception as e:
+            console.print(f"[red]Error discovering targets: {e}[/red]")
+            raise typer.Exit(1)
+    else:
+        # Use explicitly specified targets
+        discovered = discover_target_functions(target_path)
+        targets_to_register = [(name, metadata) for name, metadata in discovered
+                               if name in targets]
+
+        if len(targets_to_register) != len(targets):
+            missing = set(targets) - set(name for name, _ in targets_to_register)
+            console.print(f"[red]Error: Target(s) not found: {', '.join(missing)}[/red]")
+            raise typer.Exit(1)
+
+    # Register each target
+    registered_count = 0
+    for target_name, metadata in targets_to_register:
+        # Extract metadata
+        model_output = metadata.get('model_output', target_name)
+        data_dict = metadata.get('data', {})
+
+        # Convert data dict to list of paths
+        data_files = []
+        for key, path_str in data_dict.items():
+            data_files.append(Path(path_str))
+
+        # Generate entrypoint
+        # Convert file path to module path
+        module_path = str(target_path).replace('/', '.').replace('\\', '.')
+        if module_path.endswith('.py'):
+            module_path = module_path[:-3]
+        entrypoint = f"{module_path}:{target_name}"
+
+        # Add to registry
+        entry = registry.add_target(
+            target_id=metadata.get('name', target_name),
+            path=target_path,
+            entrypoint=entrypoint,
+            model_output=model_output,
+            data=data_files
+        )
+
+        registered_count += 1
+        console.print(f"✓ Registered {target_name}")
+        console.print(f"  Model output: {model_output}")
+        if data_files:
+            console.print(f"  Data dependencies: {len(data_files)} files")
 
     # Save registry
     registry.save(registry_path)
@@ -1797,10 +1863,9 @@ def register_target(
     # Auto-track all registry dependencies
     track_registry_dependencies(ctx, registry)
 
-    console.print(f"✓ Target '{target_id}' registered")
-    console.print(f"  Path: {target_path}")
-    console.print(f"  Model output: {model_output}")
-    console.print(f"  Observation: {observation}")
+    # Summary
+    if registered_count > 0:
+        console.print(f"\n[green]Successfully registered {registered_count} target(s)[/green]")
 
 
 @app.command()

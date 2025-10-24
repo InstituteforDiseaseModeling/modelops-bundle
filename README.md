@@ -1,6 +1,6 @@
 # ModelOps Bundle
 
-[![Tests](https://github.com/vsbuffalo/modelops-bundle/actions/workflows/tests.yml/badge.svg)](https://github.com/vsbuffalo/modelops-bundle/actions/workflows/tests.yml)
+[![Tests](https://github.com/institutefordiseasemodeling/modelops-bundle/actions/workflows/tests.yml/badge.svg)](https://github.com/institutefordiseasemodeling/modelops-bundle/actions/workflows/tests.yml)
 
 A git-like workflow for managing ML model bundles with integrated model registry capabilities.
 
@@ -8,10 +8,10 @@ A git-like workflow for managing ML model bundles with integrated model registry
 
 ```bash
 # Install from GitHub using uv
-uv pip install git+https://github.com/vsbuffalo/modelops-bundle.git
+uv pip install git+https://github.com/institutefordiseasemodeling/modelops-bundle.git
 
 # Or clone and install for development
-git clone https://github.com/vsbuffalo/modelops-bundle.git
+git clone https://github.com/institutefordiseasemodeling/modelops-bundle.git
 cd modelops-bundle
 uv pip install -e .
 ```

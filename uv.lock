@@ -489,7 +489,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "azure-storage-blob", specifier = ">=12.14.0" },
-    { name = "modelops-contracts", git = "https://github.com/vsbuffalo/modelops-contracts.git" },
+    { name = "modelops-contracts", git = "https://github.com/institutefordiseasemodeling/modelops-contracts.git" },
     { name = "oras", git = "https://github.com/vsbuffalo/oras-py.git" },
     { name = "pathspec", specifier = ">=0.12.1" },
     { name = "portalocker", specifier = ">=3.2.0" },
@@ -512,7 +512,7 @@ dev = [
 [[package]]
 name = "modelops-contracts"
 version = "0.1.0"
-source = { git = "https://github.com/vsbuffalo/modelops-contracts.git#b4b739b4da514dba670d5ef1c5f1dad6a2930667" }
+source = { git = "https://github.com/institutefordiseasemodeling/modelops-contracts.git#9d023bc513166dcdc207042a52183d63264c7605" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },

@@ -5,7 +5,7 @@ description = "OCI artifact-based model synchronization"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "modelops-contracts @ git+https://github.com/vsbuffalo/modelops-contracts.git",
+    "modelops-contracts @ git+https://github.com/institutefordiseasemodeling/modelops-contracts.git",
     "oras @ git+https://github.com/vsbuffalo/oras-py.git",
     "pathspec>=0.12.1",
     "portalocker>=3.2.0",

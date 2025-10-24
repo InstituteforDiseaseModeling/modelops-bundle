@@ -21,10 +21,10 @@ name = "{project_name}"
 version = "0.1.0"
 description = "A ModelOps bundle"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
-    "modelops-contracts @ git+https://github.com/vsbuffalo/modelops-contracts.git",
-    "modelops-calabaria @ git+https://github.com/vsbuffalo/modelops-calabaria.git",
+    "modelops-contracts @ git+https://github.com/institutefordiseasemodeling/modelops-contracts.git",
+    "modelops-calabaria @ git+https://github.com/institutefordiseasemodeling/modelops-calabaria.git",
     "numpy>=1.24.0",
     "scipy>=1.10.0",
     "polars>=0.20.0"
