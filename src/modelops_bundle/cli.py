@@ -1703,6 +1703,28 @@ def register_model(
             file_stem = model_path.stem.lower()
             reg_id = f"{file_stem}_{class_name.lower()}"
 
+        # Auto-discover outputs if not explicitly provided
+        discovered_outputs = outputs if outputs else []
+        if not outputs:
+            try:
+                # Try to discover outputs using AST-based discovery
+                from modelops_calabaria.cli.discover import discover_models_in_file
+                models = discover_models_in_file(model_path)
+                for model in models:
+                    if model['class_name'] == class_name:
+                        # Extract output names from method names (remove 'extract_' prefix)
+                        for method_name in model['methods'].get('model_outputs', []):
+                            if method_name.startswith('extract_'):
+                                discovered_outputs.append(method_name[8:])  # Remove 'extract_' prefix
+                            else:
+                                discovered_outputs.append(method_name)
+                        break
+            except ImportError:
+                # Calabaria not available, outputs will be empty
+                pass
+            except Exception as e:
+                console.print(f"[yellow]Warning: Could not discover outputs: {e}[/yellow]")
+
         # Add to registry
         entry = registry.add_model(
             model_id=reg_id,
@@ -1710,7 +1732,7 @@ def register_model(
             class_name=class_name,
             data=data,
             code=code,
-            outputs=outputs
+            outputs=discovered_outputs
         )
 
         # Compute and store digests for the model and its dependencies

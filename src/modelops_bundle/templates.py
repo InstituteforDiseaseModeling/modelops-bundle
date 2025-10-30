@@ -21,7 +21,7 @@ name = "{project_name}"
 version = "0.1.0"
 description = "A ModelOps bundle"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "modelops-contracts @ git+https://github.com/institutefordiseasemodeling/modelops-contracts.git",
     "modelops-calabaria @ git+https://github.com/institutefordiseasemodeling/modelops-calabaria.git",

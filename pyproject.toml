@@ -3,7 +3,7 @@ name = "modelops-bundle"
 version = "0.1.0"
 description = "OCI artifact-based model synchronization"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "modelops-contracts @ git+https://github.com/institutefordiseasemodeling/modelops-contracts.git",
     "oras @ git+https://github.com/vsbuffalo/oras-py.git",
