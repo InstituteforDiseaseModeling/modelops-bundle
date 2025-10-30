@@ -1,306 +1,345 @@
-# ModelOps Bundle
+# ModelOps-Bundle
 
 [![Tests](https://github.com/institutefordiseasemodeling/modelops-bundle/actions/workflows/tests.yml/badge.svg)](https://github.com/institutefordiseasemodeling/modelops-bundle/actions/workflows/tests.yml)
 
-A git-like workflow for managing ML model bundles with integrated model registry capabilities.
+OCI artifact-based packaging for reproducible simulation model distribution and
+provenance tracking.
+
+## What is ModelOps-Bundle?
+
+ModelOps-Bundle is the reproducibility layer of the ModelOps/Calabaria platform
+for simulation-based disease modeling. It provides a git-like workflow for
+packaging, versioning, and distributing simulation models with their code
+and data dependencies. But, it is intentionally decoupled from Git, since 
+we want finer-scale tracking of model provenance and dependency invalidation.
+
+**Key Features:**
+- **Scientific Reproducibility**: Every simulation run is fully traceable to
+  exact code and data versions
+- **Dependency Tracking**: Automatically detects when model dependencies change
+  and invalidates cached results
+- **OCI-Native**: Uses industry-standard container registries for distribution
+  (no custom infrastructure)
+- **Model Registry**: Tracks registered models and their metadata, traveling
+  WITH the bundle for versioning
+- **Cloud-Agnostic Storage**: Supports Azure Blob, AWS S3, GCS, or pure OCI for
+  large data files
+- **Git-Like Workflow**: Familiar commands (init, add, push, pull) for
+  scientists already using version control
+
+## Why ModelOps-Bundle?
+
+Traditional approaches to distributing simulation models face challenges:
+- **Version Mismatches**: Code updates break previously calibrated models
+- **Lost Dependencies**: Data files get moved or modified without tracking
+- **Reproducibility Crisis**: Can't recreate exact conditions from past
+  experiments
+- **Manual Tracking**: Scientists manually track which code version goes with
+  which data
+
+ModelOps-Bundle solves these by:
+1. **Content-Addressed Storage**: Same content always gets same SHA256 digest
+2. **Atomic Bundles**: Code + data + metadata travel together as a unit
+3. **Automatic Invalidation**: When dependencies change, cached results are
+   marked stale
+4. **Provenance Chain**: Every simulation result links back to exact bundle
+   digest
 
 ## Installation
 
-```bash
-# Install from GitHub using uv
-uv pip install git+https://github.com/institutefordiseasemodeling/modelops-bundle.git
+ModelOps-Bundle is typically installed as part of the full ModelOps suite:
 
-# Or clone and install for development
-git clone https://github.com/institutefordiseasemodeling/modelops-bundle.git
-cd modelops-bundle
-uv pip install -e .
+```bash
+# Install complete ModelOps suite (recommended)
+curl -sSL https://raw.githubusercontent.com/institutefordiseasemodeling/modelops/main/install.sh | bash
+
+# Or install standalone with uv
+uv tool install modelops-bundle@git+https://github.com/institutefordiseasemodeling/modelops-bundle.git
 ```
 
 ## Quick Start
 
+### 1. Initialize a Project
+
 ```bash
-# Initialize a new bundle project
-mops-bundle init my-project
+# Create a new project
+mkdir seir-model
+cd seir-model
+mops bundle init .
 
-# Register a model from Python file
-mops-bundle register-model src/model.py:StochasticSIR --data data/
+# Or initialize existing project
+cd my-existing-model
+mops bundle init .
+```
 
-# Check status with registered models
-mops-bundle status
+This creates:
+- `.modelops-bundle/` - Bundle metadata directory
+- `pyproject.toml` - Python project configuration
+- `.modelopsignore` - Files to exclude from bundle
 
-# Push bundle with model registry to cloud
-mops-bundle push
+### 2. Register Your Simulation Model
+
+```bash
+# Register a Starsim model with its data dependencies
+mops bundle register-model models/seir.py --class StochasticSEIR \
+  --data data/demographics.csv \
+  --data data/contact_patterns.csv
+
+# Auto-discovers BaseModel subclasses if class not specified
+mops bundle register-model models/network_model.py --data data/
+```
+
+**Why Register Models?**
+- Enables automatic discovery by execution workers
+- Tracks which data files each model depends on
+- Computes content digests for cache invalidation
+- Your model code stays clean - no decorators or imports needed!
+
+### 3. Check Bundle Status
+
+```bash
+mops bundle status
+
+Bundle: modelopsdevacrvsp.azurecr.io/seir-model:latest
+Local changes: 3 files modified
+
+Registered Models (2)
+─────────────────────────────────────────────────
+Model              Status      Dependencies    Cloud
+StochasticSEIR     ✓ Ready     4 files        Not pushed
+NetworkSEIR        ⚠ Stale     2 modified     Not pushed
+
+Run 'mops bundle push' to sync with cloud
+```
+
+### 4. Push to Registry
+
+```bash
+# Push to configured registry
+mops bundle push
+
+# Or push with specific tag
+mops bundle push --tag v1.0.0
 ```
 
 ## Core Concepts
 
-### Model Registry
-
-ModelOps Bundle includes an integrated model registry that tracks models, their dependencies, and metadata. The registry travels WITH the bundle (in `.modelops-bundle/registry.yaml`), ensuring reproducibility and versioning.
-
 ### Bundle Structure
 
-A bundle contains:
-- **Model code**: Python files with simulation classes
-- **Data files**: Input data referenced by models
-- **Registry metadata**: Model definitions and dependencies
-- **Configuration**: Bundle settings and cloud endpoints
+A bundle is an OCI artifact containing:
 
-## Model Registration Workflow
-
-### 1. Register Models
-
-Register simulation models from your Python code:
-
-```bash
-# Register a single model class
-mops-bundle register-model src/model.py:DeterministicSIR --data data/
-
-# Register with multiple data files
-mops-bundle register-model src/model.py:StochasticSIR --data data/input.csv data/params.json
-
-# Register multiple models at once
-mops-bundle register-model src/model.py:NetworkSIR src/model.py:DeterministicSIR --data data/
+```
+my-model-bundle/
+├── .modelops-bundle/
+│   ├── registry.yaml      # Model registry (travels with bundle)
+│   ├── config.yaml        # Bundle configuration
+│   └── manifest.yaml      # Content manifest with digests
+├── models/
+│   ├── seir.py           # Simulation model code
+│   └── network.py        # Alternative model implementation
+├── data/
+│   ├── demographics.csv  # Input data
+│   └── contacts.csv      # Contact matrices
+├── targets/              # Calibration targets (optional)
+│   └── incidence.py      # Target definitions
+└── pyproject.toml        # Python dependencies
 ```
 
-### 2. View Model Status
+### Model Registry
 
-Check the status of your registered models:
+The registry (`.modelops-bundle/registry.yaml`) tracks:
+- Model entry points (module:Class)
+- Data dependencies with SHA256 digests
+- Code dependencies
+- Model parameters and outputs
+- Scenarios for each model
 
-```bash
-> mops-bundle status
+This registry is versioned WITH the bundle, ensuring metadata stays synchronized with code.
 
-Bundle: modelopsdevacrvsb.azurecr.io/epi_model:latest
-Cloud sync: ✓ Up to date
+### Content Addressing
 
-                    Registered Models (3)
+Every file gets a SHA256 digest. When ModelOps executes a simulation:
+1. Worker pulls bundle by digest (immutable)
+2. Verifies all file digests match registry
+3. Runs simulation with exact code/data
+4. Results tagged with bundle digest for provenance
 
-Model               Status    Dependencies    Last Changed    Cloud
-DeterministicSIR    ⚠ Stale   1 changed      7 hours ago     Synced
-NetworkSIR          ⚠ Stale   1 changed      7 hours ago     Synced
-StochasticSIR       ⚠ Stale   1 changed      7 hours ago     Synced
+## Advanced Usage
 
-Issues requiring attention:
-  • StochasticSIR: Modified: data/data.csv
-  • DeterministicSIR: Modified: data/data.csv
-  • NetworkSIR: Modified: data/data.csv
+### Working with Large Data Files
 
-Run 'mops-bundle status --details <model>' for specific model info
-Run 'mops-bundle status --files' for file-level status
+For bundles with large data files (>50MB), ModelOps-Bundle automatically uses blob storage:
+
+```yaml
+# .modelops-bundle/config.yaml
+storage:
+  mode: auto              # auto, blob, or oci
+  threshold_bytes: 52428800  # 50MB
+  provider: azure         # or s3, gcs
+  container: modelops-blobs
 ```
 
-### 3. View Detailed Model Information
+### Calibration Target Registration
 
-Get detailed information about a specific model:
-
-```bash
-> mops-bundle status --details DeterministicSIR
-
-Model: DeterministicSIR
-Path: src/model.py
-Entrypoint: model:DeterministicSIR
-Status: ⚠ Stale - dependencies modified
-
-Model Digest:
-    Local:  sha256:52a7275f2...
-    Cloud:  sha256:a1b8716ee... (differs)
-
-Dependencies:
-    Model File:
-      ✓ src/model.py (5.6 KB, 2025-09-30 10:31:32.764988)
-    Data Files:
-      ⚠ data/data.csv (447.0 B, 2025-09-30 19:17:18.164177)
-          Expected: sha256:688c7a30b...
-          Actual:   sha256:a617a930f...
-    Code Files: None
-
-Cloud State:
-    Sync: Local changes not pushed
-
-Issues:
-  • Modified: data/data.csv
-  • Local changes not pushed - run 'push' to sync
-```
-
-### 4. Push to Cloud
-
-Push your bundle with registered models to the cloud:
+Register calibration targets that define how models compare to observed data:
 
 ```bash
-> mops-bundle push
-Analyzing changes...
-↑ 2 files to upload (1.7 KB), 1 unchanged
+# Register target functions
+mops bundle register-target targets/incidence.py
 
-Changes to push:
-  ↑ .modelops-bundle/registry.yaml (1.3 KB) → OCI
-  ↑ data/data.csv (447.0 B) → OCI
-
-Pushing to modelopsdevacrvsb.azurecr.io/epi_model:latest...
-Successfully pushed modelopsdevacrvsb.azurecr.io/epi_model:latest
-✓ Pushed successfully
-Digest: sha256:8ef7a2be7...
+# Targets use Calabaria decorators but are tracked by bundle
+# for reproducibility
 ```
+
+### Bundle Comparison
+
+Compare local changes with registry:
+
+```bash
+# Show what would be pushed
+mops bundle diff
+
+# Compare with specific version
+mops bundle diff --ref v1.0.0
+
+# Show file-level changes
+mops bundle status --files
+```
+
+### Pulling Remote Bundles
+
+```bash
+# Pull latest (won't overwrite local changes)
+mops bundle pull
+
+# Force overwrite local changes
+mops bundle pull --overwrite
+
+# Pull specific version
+mops bundle pull --ref sha256:abc123...
+```
+
+## Integration with ModelOps Workflow
+
+ModelOps-Bundle integrates seamlessly with the full platform:
+
+1. **Development**: Scientists develop models locally
+2. **Registration**: Models registered with `mops bundle register-model`
+3. **Pushing**: Bundle pushed to registry with `mops bundle push`
+4. **Study Design**: Calabaria creates parameter sweeps referencing bundle models
+5. **Execution**: Workers pull bundle and discover models via registry
+6. **Provenance**: Results tagged with bundle digest for reproducibility
 
 ## Lower-Level Bundle Operations
 
-For fine-grained control over bundle contents, use the file-level operations:
+For fine-grained control over bundle contents:
 
 ### Add Files
 
 ```bash
 # Add specific files
-mops-bundle add src/utils.py config/settings.yaml
+mops bundle add src/utils.py config/settings.yaml
 
-# Add entire directories recursively
-mops-bundle add src/ data/
+# Add directories recursively
+mops bundle add src/ data/
 
 # Add everything (respects .modelopsignore)
-mops-bundle add .
-
-# Force-add ignored files
-mops-bundle add --force temp/debug.log
+mops bundle add .
 ```
 
 ### Remove Files
 
 ```bash
 # Stop tracking files (keeps on disk)
-mops-bundle remove src/old_model.py
+mops bundle remove src/old_model.py
 
 # Untrack AND delete files
-mops-bundle remove --rm tmp/
+mops bundle remove --rm tmp/
 ```
 
 ### File Status
 
 ```bash
 # Show all tracked files
-mops-bundle status --files
-
-# Show untracked files
-mops-bundle status -u
+mops bundle status --files
 
 # Show only untracked files
-mops-bundle status --untracked-only
+mops bundle status --untracked-only
 ```
 
-## Environment Setup
+## Storage Backends
 
-ModelOps Bundle uses environment configurations from `~/.modelops/bundle-env/` which are automatically created when you provision ModelOps infrastructure with `mops infra up`.
+ModelOps-Bundle supports multiple storage backends:
 
-For local development:
-```bash
-# From modelops-bundle/dev directory
-make start  # Starts local registry and storage
-```
+- **OCI Registry** (default): Pure OCI artifacts, best for <50MB
+- **Azure Blob Storage**: For large data files with OCI manifest
+- **AWS S3**: S3 backend with OCI manifest
+- **Google Cloud Storage**: GCS backend with OCI manifest
+- **Local Filesystem**: For development and testing
 
-## Additional Commands
+## Security Considerations
 
-### Pull Bundle
+- **Digest Verification**: All content verified against SHA256 digests
+- **Registry Authentication**: Uses standard Docker/OCI credentials
+- **Blob Storage Auth**: Integrated with cloud provider IAM
+- **No Code Execution**: Bundle is pure data until explicitly executed by workers
 
-Pull bundle from registry without overwriting local changes:
+## Development
 
-```bash
-# Pull latest version
-mops-bundle pull
-
-# Pull specific tag
-mops-bundle pull --tag v1.2.3
-
-# Overwrite local changes
-mops-bundle pull --overwrite
-```
-
-### View Manifests
-
-List and inspect registry tags:
+For development and testing:
 
 ```bash
-# List all tags
-mops-bundle manifest
+# Clone the repository
+git clone https://github.com/institutefordiseasemodeling/modelops-bundle.git
+cd modelops-bundle
 
-# Show specific tag details
-mops-bundle manifest v1.2.3
+# Install in development mode
+uv pip install -e .
 
-# Just list tag names
-mops-bundle manifest --tags-only
+# Start local registry for testing
+cd dev
+docker compose up -d
+
+# Run tests
+uv run pytest
+
+# Run with local registry
+export REGISTRY_URL=localhost:5555
+export MODELOPS_BUNDLE_INSECURE=true
+mops bundle push
 ```
 
-### Diff Changes
+## Environment Configuration
 
-Compare local and remote bundles:
+ModelOps-Bundle uses environment configurations from `~/.modelops/bundle-env/`
+which are automatically created when you provision ModelOps infrastructure with
+`mops infra up`.
+
+For manual configuration:
 
 ```bash
-# Compare with latest
-mops-bundle diff
+# Set registry endpoint
+export MODELOPS_BUNDLE_REGISTRY=myregistry.azurecr.io
 
-# Compare with specific tag
-mops-bundle diff --tag v1.2
+# Set blob storage (for large files)
+export AZURE_STORAGE_ACCOUNT=myaccount
+export AZURE_STORAGE_CONTAINER=bundles
+
+# Or use connection string
+export AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=..."
 ```
 
-### Deploy Bundle
+## Related Projects
 
-Materialize bundle to another directory (useful for deployments):
+- **[modelops](https://github.com/institutefordiseasemodeling/modelops)** - Infrastructure orchestration
+- **[modelops-contracts](https://github.com/institutefordiseasemodeling/modelops-contracts)** - API contracts
+- **[modelops-calabaria](https://github.com/institutefordiseasemodeling/modelops-calabaria)** - Science framework
 
-```bash
-# Download latest to deployment directory
-mops-bundle ensure --dest /deploy/model
+## License
 
-# Download specific version
-mops-bundle ensure --ref v1.2 --dest /tmp
+MIT
 
-# Mirror mode (removes extra files)
-mops-bundle ensure --mirror --dest /clean
-```
+## Support
 
-## Configuration
-
-Bundle configuration is stored in `.modelops-bundle/config.yaml`:
-
-```yaml
-registry_ref: localhost:5555/my-project
-default_tag: latest
-storage:
-  provider: azure  # or s3, gcs, fs
-  container: modelops-bundles
-  mode: auto  # auto, blob, oci-inline
-  threshold_bytes: 52428800  # 50MB
-```
-
-Model registry is stored in `.modelops-bundle/registry.yaml`:
-
-```yaml
-version: '1.0'
-models:
-  model_stochasticsir:
-    entrypoint: model:StochasticSIR
-    path: src/model.py
-    class_name: StochasticSIR
-    scenarios: []
-    parameters: []
-    outputs: []
-    data:
-    - data/data.csv
-    data_digests:
-      data/data.csv: sha256:4f964a58ca00...
-    model_digest: sha256:448dc295027b...
-```
-
-Both files are created automatically and travel with the bundle for reproducibility.
-
-## Storage Modes
-
-- **OCI**: Store everything in OCI registry (small bundles)
-- **Blob**: Store in blob storage with registry manifest pointing to blobs
-- **Auto**: Automatically choose based on size (default 50MB threshold)
-
-## Integration with ModelOps
-
-The model registry enables seamless integration with ModelOps infrastructure:
-
-1. **Science Phase**: Scientists register models in bundles
-2. **Bundle Phase**: Push bundles with registry to OCI/cloud storage
-3. **Execution Phase**: ModelOps workers fetch bundles and use registry to discover models
-4. **Simulation**: Models are executed with parameters from Calabaria studies
-
-The registry travels WITH the bundle, ensuring that model metadata is always versioned alongside the code and data it describes.
+- **Issues**: [GitHub Issues](https://github.com/institutefordiseasemodeling/modelops-bundle/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/institutefordiseasemodeling/modelops-bundle/discussions)
