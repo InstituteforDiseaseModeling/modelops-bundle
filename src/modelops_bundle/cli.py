@@ -249,9 +249,10 @@ def _resolve_target_dir(path: Optional[str]) -> Tuple[Path, str, bool]:
         (target_dir, project_name, should_create_templates)
     """
     if path:
-        # Creating new directory
         target_dir = Path(path).resolve()
-        return target_dir, target_dir.name, True
+        # Only create templates if we're creating a NEW directory
+        should_create_templates = not target_dir.exists()
+        return target_dir, target_dir.name, should_create_templates
     else:
         # Using current directory
         target_dir = Path.cwd()
@@ -260,14 +261,8 @@ def _resolve_target_dir(path: Optional[str]) -> Tuple[Path, str, bool]:
 
 def _check_already_initialized(target_dir: Path) -> None:
     """Check if directory is already initialized, exit if so."""
-    conflicts = []
-    if (target_dir / "pyproject.toml").exists():
-        conflicts.append("pyproject.toml")
     if (target_dir / ".modelops-bundle").exists():
-        conflicts.append(".modelops-bundle")
-
-    if conflicts:
-        console.print(f"[red]error:[/red] Project already initialized in `{target_dir}` ({', '.join(conflicts)} exist)")
+        console.print(f"[red]error:[/red] Project already initialized in `{target_dir}` (.modelops-bundle exists)")
         raise typer.Exit(1)
 
 
@@ -327,24 +322,75 @@ def init(
         save_tracked(TrackedFiles(), ctx)
         save_state(SyncState(), ctx)
 
-        # Create templates if new project
+        # Create templates if new project OR handle partial template creation
         if create_templates:
             create_project_templates(target_dir, project_name)
             console.print("[green]✓[/green] Created project templates")
+        else:
+            # For existing projects, still create .modelopsignore and update .gitignore
+            from .templates import create_modelopsignore, create_gitignore_entry
 
-            # Auto-track template files
-            tracked = TrackedFiles()
-            template_files = ["pyproject.toml", "README.md", ".modelopsignore"]
-            for file_name in template_files:
-                file_path = target_dir / file_name
-                if file_path.exists():
-                    rel_path = ctx.to_project_relative(file_path)
-                    if not ctx.should_ignore(rel_path):
-                        tracked.add(rel_path)
+            # Create .modelopsignore if missing
+            ignore_path = target_dir / ".modelopsignore"
+            if not ignore_path.exists():
+                ignore_path.write_text(create_modelopsignore())
+                console.print("[green]✓[/green] Created .modelopsignore")
 
-            if tracked:
-                save_tracked(tracked, ctx)
-                console.print(f"[green]✓[/green] Auto-tracked {len(tracked.files)} template files")
+            # Update .gitignore
+            gitignore_path = target_dir / ".gitignore"
+            if gitignore_path.exists():
+                content = gitignore_path.read_text()
+                if ".modelops-bundle/" not in content:
+                    with gitignore_path.open("a") as f:
+                        f.write(create_gitignore_entry())
+                    console.print("[green]✓[/green] Updated .gitignore")
+            else:
+                gitignore_path.write_text(create_gitignore_entry().strip() + "\n")
+                console.print("[green]✓[/green] Created .gitignore")
+
+            # Check if project has required dependencies
+            pyproject_path = target_dir / "pyproject.toml"
+            if pyproject_path.exists():
+                import tomllib
+                with open(pyproject_path, "rb") as f:
+                    pyproject_data = tomllib.load(f)
+                    dependencies = pyproject_data.get("project", {}).get("dependencies", [])
+
+                    # Check for required packages
+                    has_contracts = any("modelops-contracts" in dep for dep in dependencies)
+                    has_calabaria = any("modelops-calabaria" in dep for dep in dependencies)
+
+                    if not (has_contracts and has_calabaria):
+                        console.print("\n[yellow]⚠ Important: Your models need these dependencies:[/yellow]")
+                        console.print("[dim]Run the following commands to add them:[/dim]")
+                        console.print()
+                        if not has_contracts:
+                            console.print("  [cyan]uv add 'modelops-contracts @ git+https://github.com/institutefordiseasemodeling/modelops-contracts.git'[/cyan]")
+                        if not has_calabaria:
+                            console.print("  [cyan]uv add 'modelops-calabaria @ git+https://github.com/institutefordiseasemodeling/modelops-calabaria.git'[/cyan]")
+                        console.print()
+                        console.print("[dim]These packages provide:[/dim]")
+                        console.print("[dim]  • BaseModel class for your models[/dim]")
+                        console.print("[dim]  • @calibration_target decorator for targets[/dim]")
+                        console.print("[dim]  • Cloud execution compatibility[/dim]")
+
+        # Auto-track files (both for new and existing projects)
+        tracked = TrackedFiles()
+        template_files = [".modelopsignore"]  # Always track .modelopsignore
+        if create_templates:
+            # If we created templates, also track those
+            template_files.extend(["pyproject.toml", "README.md"])
+
+        for file_name in template_files:
+            file_path = target_dir / file_name
+            if file_path.exists():
+                rel_path = ctx.to_project_relative(file_path)
+                if not ctx.should_ignore(rel_path):
+                    tracked.add(rel_path)
+
+        if tracked:
+            save_tracked(tracked, ctx)
+            console.print(f"[green]✓[/green] Auto-tracked {len(tracked.files)} files")
 
         # Success message
         console.print(f"[green]✓[/green] Initialized project `{project_name}` with environment '{env}'")

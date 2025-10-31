@@ -30,9 +30,6 @@ dependencies = [
     "polars>=0.20.0"
 ]
 
-[tool.modelops-bundle]
-# Models will be added here by 'mops-bundle discover --save'
-
 [tool.hatch.metadata]
 allow-direct-references = true
 
