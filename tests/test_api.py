@@ -48,8 +48,6 @@ def test_push_dir_function_signature():
 
 def test_push_dir_basic_flow(tmp_path, monkeypatch):
     """Test basic flow of push_dir without actual registry interaction."""
-    from modelops_bundle.api import push_dir
-
     # Setup test project
     monkeypatch.chdir(tmp_path)
 
@@ -74,14 +72,16 @@ def test_push_dir_basic_flow(tmp_path, monkeypatch):
     # Create empty sync state
     save_state(SyncState(), ctx)
 
-    # Mock load_env_for_command to avoid credential setup
-    with patch('modelops_bundle.env_manager.load_env_for_command'):
-        # Mock the actual push operation - need to patch where it's imported
-        with patch('modelops_bundle.api.ops_push') as mock_push:
+    # Import api module first
+    from modelops_bundle import api
+
+    # Now mock the functions on the already-imported module
+    with patch.object(api, 'load_env_for_command'):
+        with patch.object(api, 'ops_push') as mock_push:
             mock_push.return_value = "sha256:abc123"
 
             # Call the API function
-            digest = push_dir(".")
+            digest = api.push_dir(".")
 
     # Verify it returned a digest
     assert digest == "sha256:abc123"
@@ -97,8 +97,6 @@ def test_push_dir_basic_flow(tmp_path, monkeypatch):
 
 def test_push_dir_with_custom_tag(tmp_path, monkeypatch):
     """Test push_dir with custom tag."""
-    from modelops_bundle.api import push_dir
-
     monkeypatch.chdir(tmp_path)
     ctx = ProjectContext.init(tmp_path)
 
@@ -107,11 +105,13 @@ def test_push_dir_with_custom_tag(tmp_path, monkeypatch):
     save_tracked(TrackedFiles(), ctx)
     save_state(SyncState(), ctx)
 
-    with patch('modelops_bundle.env_manager.load_env_for_command'):
-        with patch('modelops_bundle.api.ops_push') as mock_push:
+    from modelops_bundle import api
+
+    with patch.object(api, 'load_env_for_command'):
+        with patch.object(api, 'ops_push') as mock_push:
             mock_push.return_value = "sha256:def456"
             # Call with custom tag
-            digest = push_dir(".", tag="v1.0.0")
+            digest = api.push_dir(".", tag="v1.0.0")
 
     # Verify tag was passed through
     assert mock_push.call_args.kwargs.get('tag') == "v1.0.0"
