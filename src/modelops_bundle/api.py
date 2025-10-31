@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from .context import ProjectContext
+from .env_manager import load_env_for_command
 from .ops import load_config, load_tracked, push as ops_push
 
 
@@ -50,7 +51,6 @@ def push_dir(path: str = ".", tag: Optional[str] = None) -> str:
     tracked = load_tracked(ctx)
 
     # Load environment for storage credentials
-    from .cli import load_env_for_command
     load_env_for_command(ctx.storage_dir, require_storage=True)
 
     # Push and return the digest

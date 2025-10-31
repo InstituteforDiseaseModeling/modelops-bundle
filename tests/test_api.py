@@ -74,12 +74,12 @@ def test_push_dir_basic_flow(tmp_path, monkeypatch):
     # Create empty sync state
     save_state(SyncState(), ctx)
 
-    # Mock the actual push operation
-    with patch('modelops_bundle.ops.push') as mock_push:
-        mock_push.return_value = "sha256:abc123"
+    # Mock load_env_for_command to avoid credential setup
+    with patch('modelops_bundle.env_manager.load_env_for_command'):
+        # Mock the actual push operation - need to patch where it's imported
+        with patch('modelops_bundle.api.ops_push') as mock_push:
+            mock_push.return_value = "sha256:abc123"
 
-        # Mock load_env_for_command to avoid credential setup
-        with patch('modelops_bundle.api.load_env_for_command'):
             # Call the API function
             digest = push_dir(".")
 
@@ -107,9 +107,9 @@ def test_push_dir_with_custom_tag(tmp_path, monkeypatch):
     save_tracked(TrackedFiles(), ctx)
     save_state(SyncState(), ctx)
 
-    with patch('modelops_bundle.ops.push') as mock_push:
-        mock_push.return_value = "sha256:def456"
-        with patch('modelops_bundle.api.load_env_for_command'):
+    with patch('modelops_bundle.env_manager.load_env_for_command'):
+        with patch('modelops_bundle.api.ops_push') as mock_push:
+            mock_push.return_value = "sha256:def456"
             # Call with custom tag
             digest = push_dir(".", tag="v1.0.0")
 

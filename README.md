@@ -47,15 +47,19 @@ ModelOps-Bundle solves these by:
 
 ## Installation
 
-ModelOps-Bundle is typically installed as part of the full ModelOps suite:
+ModelOps-Bundle is typically installed as part of the full ModelOps suite, see
+the directions at
+[ModelOps](https://github.com/InstituteforDiseaseModeling/modelops).
 
-```bash
-# Install complete ModelOps suite (recommended)
-curl -sSL https://raw.githubusercontent.com/institutefordiseasemodeling/modelops/main/install.sh | bash
-
-# Or install standalone with uv
-uv tool install modelops-bundle@git+https://github.com/institutefordiseasemodeling/modelops-bundle.git
-```
+<!---->
+<!-- TODO: add later when repo is public -->
+<!-- ```bash -->
+<!-- # Install complete ModelOps suite (recommended) -->
+<!-- curl -sSL https://raw.githubusercontent.com/institutefordiseasemodeling/modelops/main/install.sh | bash -->
+<!---->
+<!-- # Or install standalone with uv -->
+<!-- uv tool install modelops-bundle@git+https://github.com/institutefordiseasemodeling/modelops-bundle.git -->
+<!-- ``` -->
 
 ## Quick Start
 
@@ -81,7 +85,7 @@ This creates:
 
 ```bash
 # Register a Starsim model with its data dependencies
-mops bundle register-model models/seir.py --class StochasticSEIR \
+mops bundle register-model models/seir.py --class StarsimSIR \
   --data data/demographics.csv \
   --data data/contact_patterns.csv
 
@@ -106,7 +110,7 @@ Local changes: 3 files modified
 Registered Models (2)
 ─────────────────────────────────────────────────
 Model              Status      Dependencies    Cloud
-StochasticSEIR     ✓ Ready     4 files        Not pushed
+StarsimSIR         ✓ Ready     4 files        Not pushed
 NetworkSEIR        ⚠ Stale     2 modified     Not pushed
 
 Run 'mops bundle push' to sync with cloud
