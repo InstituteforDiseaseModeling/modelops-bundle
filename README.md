@@ -271,23 +271,6 @@ mops bundle status --files
 mops bundle status --untracked-only
 ```
 
-## Storage Backends
-
-ModelOps-Bundle supports multiple storage backends:
-
-- **OCI Registry** (default): Pure OCI artifacts, best for <50MB
-- **Azure Blob Storage**: For large data files with OCI manifest
-- **AWS S3**: S3 backend with OCI manifest
-- **Google Cloud Storage**: GCS backend with OCI manifest
-- **Local Filesystem**: For development and testing
-
-## Security Considerations
-
-- **Digest Verification**: All content verified against SHA256 digests
-- **Registry Authentication**: Uses standard Docker/OCI credentials
-- **Blob Storage Auth**: Integrated with cloud provider IAM
-- **No Code Execution**: Bundle is pure data until explicitly executed by workers
-
 ## Development
 
 For development and testing:
@@ -319,19 +302,27 @@ ModelOps-Bundle uses environment configurations from `~/.modelops/bundle-env/`
 which are automatically created when you provision ModelOps infrastructure with
 `mops infra up`.
 
-For manual configuration:
+These YAML files contain your registry and storage settings:
 
-```bash
-# Set registry endpoint
-export MODELOPS_BUNDLE_REGISTRY=myregistry.azurecr.io
-
-# Set blob storage (for large files)
-export AZURE_STORAGE_ACCOUNT=myaccount
-export AZURE_STORAGE_CONTAINER=bundles
-
-# Or use connection string
-export AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=..."
+```yaml
+# ~/.modelops/bundle-env/dev.yaml
+environment: dev
+registry:
+  provider: docker
+  login_server: modelopsdevacr.azurecr.io
+storage:
+  provider: azure
+  container: bundle-blobs
+  connection_string: "DefaultEndpointsProtocol=..."
 ```
+
+When you run bundle commands, the appropriate environment is loaded automatically:
+- Projects are initialized with an environment (e.g., `mops bundle init --env dev`)
+- The environment is pinned in `.modelops-bundle/env`
+- Credentials are loaded from the environment file when needed
+
+For local development/testing, you can create a `local.yaml` environment that uses
+a local Docker registry (see Development section).
 
 ## Related Projects
 
