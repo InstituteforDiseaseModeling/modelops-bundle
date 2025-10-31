@@ -351,28 +351,32 @@ def init(
             # Check if project has required dependencies
             pyproject_path = target_dir / "pyproject.toml"
             if pyproject_path.exists():
-                import tomllib
-                with open(pyproject_path, "rb") as f:
-                    pyproject_data = tomllib.load(f)
-                    dependencies = pyproject_data.get("project", {}).get("dependencies", [])
+                try:
+                    import tomllib
+                    with open(pyproject_path, "rb") as f:
+                        pyproject_data = tomllib.load(f)
+                        dependencies = pyproject_data.get("project", {}).get("dependencies", [])
+                except Exception:
+                    # If we can't parse the pyproject.toml, skip dependency check
+                    dependencies = []
 
-                    # Check for required packages
-                    has_contracts = any("modelops-contracts" in dep for dep in dependencies)
-                    has_calabaria = any("modelops-calabaria" in dep for dep in dependencies)
+                # Check for required packages
+                has_contracts = any("modelops-contracts" in dep for dep in dependencies)
+                has_calabaria = any("modelops-calabaria" in dep for dep in dependencies)
 
-                    if not (has_contracts and has_calabaria):
-                        console.print("\n[yellow]⚠ Important: Your models need these dependencies:[/yellow]")
-                        console.print("[dim]Run the following commands to add them:[/dim]")
-                        console.print()
-                        if not has_contracts:
-                            console.print("  [cyan]uv add 'modelops-contracts @ git+https://github.com/institutefordiseasemodeling/modelops-contracts.git'[/cyan]")
-                        if not has_calabaria:
-                            console.print("  [cyan]uv add 'modelops-calabaria @ git+https://github.com/institutefordiseasemodeling/modelops-calabaria.git'[/cyan]")
-                        console.print()
-                        console.print("[dim]These packages provide:[/dim]")
-                        console.print("[dim]  • BaseModel class for your models[/dim]")
-                        console.print("[dim]  • @calibration_target decorator for targets[/dim]")
-                        console.print("[dim]  • Cloud execution compatibility[/dim]")
+                if not (has_contracts and has_calabaria):
+                    console.print("\n[yellow]⚠ Important: Your models need these dependencies:[/yellow]")
+                    console.print("[dim]Run the following commands to add them:[/dim]")
+                    console.print()
+                    if not has_contracts:
+                        console.print("  [cyan]uv add 'modelops-contracts @ git+https://github.com/institutefordiseasemodeling/modelops-contracts.git'[/cyan]")
+                    if not has_calabaria:
+                        console.print("  [cyan]uv add 'modelops-calabaria @ git+https://github.com/institutefordiseasemodeling/modelops-calabaria.git'[/cyan]")
+                    console.print()
+                    console.print("[dim]These packages provide:[/dim]")
+                    console.print("[dim]  • BaseModel class for your models[/dim]")
+                    console.print("[dim]  • @calibration_target decorator for targets[/dim]")
+                    console.print("[dim]  • Cloud execution compatibility[/dim]")
 
         # Auto-track files (both for new and existing projects)
         tracked = TrackedFiles()
