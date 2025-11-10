@@ -32,7 +32,7 @@ class AzureCliAuth(AuthProvider):
 
         try:
             result = subprocess.run(
-                ["az", "acr", "login", "--name", registry_name, "--expose-token"],
+                ["az", "acr", "login", "--name", registry_name, "--expose-token", "--output", "json"],
                 capture_output=True,
                 text=True,
                 check=False  # Handle errors manually for better diagnostics
