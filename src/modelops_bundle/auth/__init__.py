@@ -35,12 +35,57 @@ class AzureCliAuth(AuthProvider):
                 ["az", "acr", "login", "--name", registry_name, "--expose-token"],
                 capture_output=True,
                 text=True,
-                check=True
+                check=False  # Handle errors manually for better diagnostics
             )
-            token_info = json.loads(result.stdout)
+
+            # Check if command succeeded
+            if result.returncode != 0:
+                from ..errors import AuthError
+                error_msg = result.stderr.strip() or result.stdout.strip()
+                raise AuthError(
+                    f"Azure CLI authentication failed for registry '{registry_name}'.\n"
+                    f"Error: {error_msg}\n\n"
+                    f"Try:\n"
+                    f"  1. az login\n"
+                    f"  2. az acr login --name {registry_name}"
+                )
+
+            # Check if stdout has content before parsing
+            if not result.stdout.strip():
+                from ..errors import AuthError
+                raise AuthError(
+                    f"Azure CLI returned empty output for registry '{registry_name}'.\n"
+                    f"stderr: {result.stderr}\n\n"
+                    f"This usually means authentication failed. Try:\n"
+                    f"  1. az login\n"
+                    f"  2. az acr login --name {registry_name}"
+                )
+
+            # Parse JSON response
+            try:
+                token_info = json.loads(result.stdout)
+            except json.JSONDecodeError as e:
+                from ..errors import AuthError
+                raise AuthError(
+                    f"Failed to parse Azure CLI output for registry '{registry_name}'.\n"
+                    f"Parse error: {e}\n"
+                    f"stdout: {result.stdout[:200]}\n"
+                    f"stderr: {result.stderr[:200]}\n\n"
+                    f"Try:\n"
+                    f"  1. az login\n"
+                    f"  2. az acr login --name {registry_name}"
+                )
 
             # Get the refresh token and exchange it for an access token
-            refresh_token = token_info["refreshToken"]
+            refresh_token = token_info.get("refreshToken")
+            if not refresh_token:
+                from ..errors import AuthError
+                raise AuthError(
+                    f"No refresh token in Azure CLI response for registry '{registry_name}'.\n"
+                    f"Response keys: {list(token_info.keys())}\n\n"
+                    f"Try: az acr login --name {registry_name}"
+                )
+
             login_server = token_info.get("loginServer", f"{registry_name}.azurecr.io")
 
             # Exchange refresh token for access token (required for blob operations)
@@ -52,11 +97,15 @@ class AzureCliAuth(AuthProvider):
                 expires_at=None  # Access tokens typically last 1 hour
             )
         except subprocess.CalledProcessError as e:
+            # This shouldn't happen with check=False, but keep for safety
             from ..errors import AuthError
-            raise AuthError(f"Azure CLI auth failed: {e.stderr}")
-        except (KeyError, json.JSONDecodeError) as e:
+            raise AuthError(f"Azure CLI command failed: {e.stderr}")
+        except KeyError as e:
             from ..errors import AuthError
-            raise AuthError(f"Failed to parse Azure CLI output: {e}")
+            raise AuthError(
+                f"Missing expected field in Azure CLI response: {e}\n"
+                f"Try: az acr login --name {registry_name}"
+            )
 
     def get_storage_credential(self, account: str, container: str) -> Credential:
         """Storage auth not needed for bundle CLI operations."""

@@ -234,6 +234,23 @@ ModelOps-Bundle integrates seamlessly with the full platform:
 5. **Execution**: Workers pull bundle and discover models via registry
 6. **Provenance**: Results tagged with bundle digest for reproducibility
 
+### Monitoring Job Execution
+
+After submitting jobs with `mops jobs submit`, you can monitor the Dask cluster
+executing your bundled models:
+
+```bash
+# Port-forward to access Dask dashboard (run in separate terminals or use &)
+kubectl port-forward -n modelops-dask-dev svc/dask-scheduler 8787:8787 &
+kubectl port-forward -n modelops-dask-dev svc/dask-scheduler 8786:8786 &
+
+# Access Dask dashboard at http://localhost:8787
+# Workers connect via port 8786
+```
+
+This lets you monitor task progress, worker utilization, and debug any issues
+with your bundle execution in real-time.
+
 ## Lower-Level Bundle Operations
 
 For fine-grained control over bundle contents:
