@@ -80,11 +80,21 @@ def display_model_status(snapshot: ModelStatusSnapshot, console: Console):
 
     console.print(table)
 
+    # Target table (if targets exist)
+    if snapshot.targets:
+        console.print("")  # Spacing
+        display_target_status(snapshot, console)
+
     # Issues section
     models_with_issues = snapshot.get_models_needing_attention()
-    if models_with_issues:
+    targets_with_issues = snapshot.get_targets_needing_attention()
+    if models_with_issues or targets_with_issues:
         console.print("\n[bold]Issues requiring attention:[/bold]")
-        # Group by severity
+
+        # Import target readiness for grouping
+        from .target_state import TargetReadiness
+
+        # Group models by severity
         broken_models = [m for m in models_with_issues if m.local_readiness == ModelReadiness.BROKEN]
         diverged_models = [m for m in models_with_issues if m.cloud_sync_state == ModelSyncState.DIVERGED]
         other_models = [
@@ -93,23 +103,44 @@ def display_model_status(snapshot: ModelStatusSnapshot, console: Console):
             if m not in broken_models and m not in diverged_models
         ]
 
-        # Show broken first (highest priority)
+        # Group targets by severity
+        broken_targets = [t for t in targets_with_issues if t.local_readiness == TargetReadiness.BROKEN]
+        diverged_targets = [t for t in targets_with_issues if t.cloud_sync_state == ModelSyncState.DIVERGED]
+        other_targets = [
+            t
+            for t in targets_with_issues
+            if t not in broken_targets and t not in diverged_targets
+        ]
+
+        # Show broken first (highest priority) - models and targets
         for model in broken_models:
             for issue in model.issues:
                 console.print(f"  [red]•[/red] {model.name}: {issue}")
+        for target in broken_targets:
+            target_name = target.entrypoint.split(':')[-1]
+            for issue in target.issues:
+                console.print(f"  [red]•[/red] {target_name}: {issue}")
 
-        # Then diverged
+        # Then diverged - models and targets
         for model in diverged_models:
             for issue in model.issues:
                 console.print(f"  [yellow]•[/yellow] {model.name}: {issue}")
+        for target in diverged_targets:
+            target_name = target.entrypoint.split(':')[-1]
+            for issue in target.issues:
+                console.print(f"  [yellow]•[/yellow] {target_name}: {issue}")
 
-        # Then others
+        # Then others - models and targets
         for model in other_models:
             for issue in model.issues:
                 console.print(f"  • {model.name}: {issue}")
+        for target in other_targets:
+            target_name = target.entrypoint.split(':')[-1]
+            for issue in target.issues:
+                console.print(f"  • {target_name}: {issue}")
 
     # Help text
-    console.print("\n[dim]Run 'mops-bundle status --details <model>' for specific model info[/dim]")
+    console.print("\n[dim]Run 'mops-bundle status --details <model|target>' for specific info[/dim]")
     console.print("[dim]Run 'mops-bundle status --files' for file-level status[/dim]")
 
 
@@ -237,6 +268,163 @@ def _get_last_changed(model: ModelState) -> str:
 
     if latest:
         # Convert datetime to ISO string for humanize_date
+        return humanize_date(latest.isoformat())
+    return "[dim]Unknown[/dim]"
+
+
+def display_target_status(snapshot: ModelStatusSnapshot, console: Console):
+    """Display registered targets table.
+
+    Args:
+        snapshot: Complete status snapshot
+        console: Rich console for output
+    """
+    from .target_state import TargetReadiness
+
+    table = Table(title=f"Registered Targets ({len(snapshot.targets)})")
+    table.add_column("Target", style="cyan")
+    table.add_column("Model Output", style="dim")
+    table.add_column("Status")
+    table.add_column("Dependencies")
+    table.add_column("Last Changed")
+    table.add_column("Cloud")
+
+    for target_id, target in sorted(snapshot.targets.items()):
+        # Status icon based on readiness
+        status_icon = {
+            TargetReadiness.READY: "[green]✓ Ready[/green]",
+            TargetReadiness.STALE: "[yellow]⚠ Stale[/yellow]",
+            TargetReadiness.BROKEN: "[red]✗ Error[/red]",
+            TargetReadiness.UNKNOWN: "[dim]? Unknown[/dim]",
+        }[target.local_readiness]
+
+        # Dependencies summary (only data files for targets)
+        total_deps = len(target.all_dependencies)
+        valid_deps = sum(1 for d in target.all_dependencies if d.is_valid)
+        if valid_deps == total_deps:
+            deps_text = "[green]✓ Current[/green]"
+        else:
+            invalid = total_deps - valid_deps
+            deps_text = f"[yellow]{invalid} changed[/yellow]"
+
+        # Last changed time
+        last_changed = _get_last_changed_target(target)
+
+        # Cloud sync state (reuse model logic)
+        cloud_text = {
+            ModelSyncState.SYNCED: "[green]Synced[/green]",
+            ModelSyncState.AHEAD: "[blue]Local ahead[/blue]",
+            ModelSyncState.BEHIND: "[yellow]Local behind[/yellow]",
+            ModelSyncState.DIVERGED: "[red]Diverged[/red]",
+            ModelSyncState.UNTRACKED: "[dim]Never pushed[/dim]",
+            ModelSyncState.UNKNOWN: "[dim]Unknown[/dim]",
+        }[target.cloud_sync_state]
+
+        # Extract target name from entrypoint for display
+        target_name = target.entrypoint.split(':')[-1]
+
+        table.add_row(
+            target_name,
+            target.model_output,
+            status_icon,
+            deps_text,
+            last_changed,
+            cloud_text
+        )
+
+    console.print(table)
+
+
+def display_target_details(target, console: Console):
+    """Display detailed status for a specific target.
+
+    Args:
+        target: Target to display details for
+        console: Rich console for output
+    """
+    from .target_state import TargetReadiness
+
+    target_name = target.entrypoint.split(':')[-1]
+    console.print(f"\n[bold]Target:[/bold] {target_name}")
+    console.print(f"[bold]Path:[/bold] {target.target_file}")
+    console.print(f"[bold]Entrypoint:[/bold] {target.entrypoint}")
+    console.print(f"[bold]Model Output:[/bold] {target.model_output}")
+
+    # Status with color
+    status_text = {
+        TargetReadiness.READY: "[green]✓ Ready to run[/green]",
+        TargetReadiness.STALE: "[yellow]⚠ Stale - dependencies modified[/yellow]",
+        TargetReadiness.BROKEN: "[red]✗ Broken - missing dependencies[/red]",
+        TargetReadiness.UNKNOWN: "[dim]? Unknown state[/dim]",
+    }[target.local_readiness]
+    console.print(f"[bold]Status:[/bold] {status_text}")
+
+    # Target digests if available
+    if target.local_target_digest:
+        console.print(f"\n[bold]Target Digest:[/bold]")
+        console.print(f"  Local:  {target.local_target_digest[:16]}...")
+        if target.cloud_target_digest:
+            if target.local_target_digest == target.cloud_target_digest:
+                console.print(f"  Cloud:  {target.cloud_target_digest[:16]}... [green](matches)[/green]")
+            else:
+                console.print(f"  Cloud:  {target.cloud_target_digest[:16]}... [yellow](differs)[/yellow]")
+
+    # Dependencies section
+    console.print("\n[bold]Dependencies:[/bold]")
+
+    # Target file
+    console.print("  Target File:")
+    _display_dependency(target.target_file_state, console, indent="    ")
+
+    # Data files (observation files)
+    if target.data_dependencies:
+        console.print("  Observation Files:")
+        for dep in target.data_dependencies:
+            _display_dependency(dep, console, indent="    ")
+    else:
+        console.print("  Observation Files: [dim]None[/dim]")
+
+    # Cloud state (same as model)
+    console.print("\n[bold]Cloud State:[/bold]")
+    sync_text = {
+        ModelSyncState.SYNCED: "[green]Synced with cloud[/green]",
+        ModelSyncState.AHEAD: "[blue]Local changes not pushed[/blue]",
+        ModelSyncState.BEHIND: "[yellow]Cloud has newer version[/yellow]",
+        ModelSyncState.DIVERGED: "[red]Local and cloud have diverged[/red]",
+        ModelSyncState.UNTRACKED: "[dim]Never pushed to cloud[/dim]",
+        ModelSyncState.UNKNOWN: "[dim]Unknown sync state[/dim]",
+    }[target.cloud_sync_state]
+    console.print(f"  Sync: {sync_text}")
+
+    if target.cloud_timestamp:
+        console.print(f"  Last pushed: {humanize_date(target.cloud_timestamp)}")
+
+    # Issues
+    if target.issues:
+        console.print("\n[bold red]Issues:[/bold red]")
+        for issue in target.issues:
+            console.print(f"  • {issue}")
+    else:
+        console.print("\n[green]No issues - target is ready to run[/green]")
+
+
+def _get_last_changed_target(target) -> str:
+    """Get human-readable last change time for target.
+
+    Args:
+        target: Target to check
+
+    Returns:
+        Human-readable time string
+    """
+    # Find most recent modification time
+    latest = None
+    for dep in target.all_dependencies:
+        if dep.last_modified:
+            if latest is None or dep.last_modified > latest:
+                latest = dep.last_modified
+
+    if latest:
         return humanize_date(latest.isoformat())
     return "[dim]Unknown[/dim]"
 

@@ -191,9 +191,10 @@ class ModelState:
 
 @dataclass
 class ModelStatusSnapshot:
-    """Complete snapshot of all models' states at a point in time."""
+    """Complete snapshot of all models' AND targets' states at a point in time."""
     timestamp: datetime
     models: Dict[str, ModelState]
+    targets: Dict[str, "TargetState"] = field(default_factory=dict)
 
     # Bundle-level info
     bundle_ref: str
@@ -212,8 +213,10 @@ class ModelStatusSnapshot:
 
     @property
     def all_synced(self) -> bool:
-        """Check if all models are synced with cloud."""
-        return all(m.cloud_sync_state == ModelSyncState.SYNCED for m in self.models.values())
+        """Check if all models and targets are synced with cloud."""
+        models_synced = all(m.cloud_sync_state == ModelSyncState.SYNCED for m in self.models.values())
+        targets_synced = all(t.cloud_sync_state == ModelSyncState.SYNCED for t in self.targets.values())
+        return models_synced and targets_synced
 
     def get_models_needing_attention(self) -> List[ModelState]:
         """Get models with issues."""
@@ -226,6 +229,18 @@ class ModelStatusSnapshot:
     def get_models_by_sync_state(self, sync_state: ModelSyncState) -> List[ModelState]:
         """Get models with specific sync state."""
         return [m for m in self.models.values() if m.cloud_sync_state == sync_state]
+
+    def get_targets_needing_attention(self) -> List["TargetState"]:
+        """Get targets with issues."""
+        return [t for t in self.targets.values() if t.issues]
+
+    def get_targets_by_readiness(self, readiness: "TargetReadiness") -> List["TargetState"]:
+        """Get targets with specific readiness state."""
+        return [t for t in self.targets.values() if t.local_readiness == readiness]
+
+    def get_targets_by_sync_state(self, sync_state: ModelSyncState) -> List["TargetState"]:
+        """Get targets with specific sync state."""
+        return [t for t in self.targets.values() if t.cloud_sync_state == sync_state]
 
 
 def compute_model_digest(paths: List[str], digests: Dict[str, str]) -> str:

@@ -102,15 +102,27 @@ class ModelStatusComputer:
             )
             models[model_id] = model_state
 
-        # 6. Get tracked files
+        # 6. Compute per-target states (if targets exist)
+        targets = {}
+        if self.registry.targets:
+            from .target_status_computer import TargetStatusComputer
+            target_computer = TargetStatusComputer(self.ctx, self.registry)
+            targets = target_computer.compute_target_states(
+                local_snapshot,
+                cloud_snapshot,
+                sync_state,
+            )
+
+        # 7. Get tracked files
         from .ops import load_tracked
 
         tracked = load_tracked(self.ctx)
 
-        # 7. Return complete snapshot
+        # 8. Return complete snapshot
         return ModelStatusSnapshot(
             timestamp=datetime.now(),
             models=models,
+            targets=targets,
             bundle_ref=registry_ref,
             bundle_tag=tag,
             tracked_files=set(tracked.files),
@@ -120,7 +132,7 @@ class ModelStatusComputer:
         )
 
     def _gather_all_dependency_files(self, registry: BundleRegistry) -> List[Path]:
-        """Gather all files that any model depends on.
+        """Gather all files that any model or target depends on.
 
         Args:
             registry: Model registry
@@ -129,6 +141,8 @@ class ModelStatusComputer:
             List of paths to check
         """
         all_paths = set()
+
+        # Gather model dependencies
         for model_entry in registry.models.values():
             # Add model file
             all_paths.add(Path(model_entry.path))
@@ -140,6 +154,15 @@ class ModelStatusComputer:
             # Add code dependencies
             for code_path in model_entry.code or []:
                 all_paths.add(Path(code_path))
+
+        # Gather target dependencies
+        for target_entry in registry.targets.values():
+            # Add target file
+            all_paths.add(Path(target_entry.path))
+
+            # Add data dependencies (observation files)
+            for data_path in target_entry.data or []:
+                all_paths.add(Path(data_path))
 
         # Convert to absolute paths
         return [self.ctx.absolute(p) for p in all_paths]

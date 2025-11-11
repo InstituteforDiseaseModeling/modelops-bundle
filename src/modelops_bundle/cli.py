@@ -573,19 +573,21 @@ def status(
     untracked_only: bool = typer.Option(False, "--untracked-only", help="Show only untracked files"),
     include_ignored: bool = typer.Option(False, "--include-ignored", help="Include ignored files"),
     files: bool = typer.Option(False, "--files", "-f", help="Show file-centric view instead of model view"),
-    details: Optional[str] = typer.Option(None, "--details", "-d", help="Show details for specific model"),
+    details: Optional[str] = typer.Option(None, "--details", "-d", help="Show details for specific model or target"),
 ):
-    """Show model status and sync state.
+    """Show model and target status and sync state.
 
     By default shows model-centric view with readiness and sync status.
+    Also shows registered targets if any exist.
     Use --files to see the traditional file-level view.
 
     Examples:
-        mops-bundle status                  # Model status overview
-        mops-bundle status --files          # File-level changes
-        mops-bundle status --details SIR    # Details for specific model
-        mops-bundle status -u               # Also show untracked files
-        mops-bundle status --untracked-only # Only show untracked files
+        mops-bundle status                          # Model/target status overview
+        mops-bundle status --files                  # File-level changes
+        mops-bundle status --details SIR            # Details for specific model
+        mops-bundle status --details prevalence_target  # Details for specific target
+        mops-bundle status -u                       # Also show untracked files
+        mops-bundle status --untracked-only         # Only show untracked files
     """
     ctx = require_project_context()
 
@@ -619,7 +621,7 @@ def status(
             snapshot = computer.compute_full_status(config, config.registry_ref, config.default_tag)
 
             if details:
-                # Show details for specific model
+                # Show details for specific model OR target
                 # Try to find model by ID or name
                 model = None
                 for model_id, model_state in snapshot.models.items():
@@ -627,13 +629,30 @@ def status(
                         model = model_state
                         break
 
+                # Try to find target by ID or name (if model not found)
+                target = None
+                if not model:
+                    for target_id, target_state in snapshot.targets.items():
+                        target_name = target_state.entrypoint.split(':')[-1]
+                        if target_id == details or target_name == details:
+                            target = target_state
+                            break
+
                 if model:
                     display_model_details(model, console)
+                elif target:
+                    from .status_display import display_target_details
+                    display_target_details(target, console)
                 else:
-                    console.print(f"[red]Model not found: {details}[/red]")
+                    console.print(f"[red]Model or target not found: {details}[/red]")
                     console.print("[dim]Available models:[/dim]")
                     for model_id, model_state in snapshot.models.items():
                         console.print(f"  • {model_id} ({model_state.name})")
+                    if snapshot.targets:
+                        console.print("[dim]Available targets:[/dim]")
+                        for target_id, target_state in snapshot.targets.items():
+                            target_name = target_state.entrypoint.split(':')[-1]
+                            console.print(f"  • {target_id} ({target_name})")
                     raise typer.Exit(1)
             else:
                 # Show overview
