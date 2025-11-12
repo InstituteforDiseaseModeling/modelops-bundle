@@ -1868,7 +1868,26 @@ def register_target(
         console.print(f"[red]Error: Target file not found: {target_path}[/red]")
         raise typer.Exit(1)
 
-    # Determine which targets to register
+    # Get all unique target files from existing registry for regeneration
+    existing_target_files = {target.path for target in registry.targets.values()}
+
+    # Add the new target file to the set
+    all_target_files = existing_target_files | {target_path}
+
+    # Store old target IDs for comparison
+    old_target_ids = set(registry.targets.keys())
+
+    # Clear all targets - we'll regenerate from all files
+    registry.targets = {}
+
+    # Show what we're regenerating from
+    if len(all_target_files) > 1:
+        console.print(f"[cyan]Regenerating targets from {len(all_target_files)} file(s):[/cyan]")
+        for file_path in sorted(all_target_files):
+            console.print(f"  • {file_path}")
+        console.print()
+
+    # Determine which targets to register from the current file
     targets_to_register = []
 
     if not targets:
@@ -1914,42 +1933,74 @@ def register_target(
             console.print(f"[red]Error: Target(s) not found: {', '.join(missing)}[/red]")
             raise typer.Exit(1)
 
-    # Register each target
+    # Register targets from ALL files (including previously registered ones)
     registered_count = 0
-    for target_name, metadata in targets_to_register:
-        # Extract metadata
-        model_output = metadata.get('model_output', target_name)
-        data_dict = metadata.get('data', {})
+    all_targets_by_file = {}
 
-        # Convert data dict to list of paths
-        data_files = []
-        for key, path_str in data_dict.items():
-            data_files.append(Path(path_str))
+    # First, process the current file with any filters applied
+    all_targets_by_file[target_path] = targets_to_register
 
-        # Generate entrypoint
-        # Convert file path to module path
-        module_path = str(target_path).replace('/', '.').replace('\\', '.')
-        if module_path.endswith('.py'):
-            module_path = module_path[:-3]
-        entrypoint = f"{module_path}:{target_name}"
+    # Then, process all other previously registered files
+    for file_path in all_target_files:
+        if file_path != target_path:
+            # Skip files that no longer exist
+            if not file_path.exists():
+                console.print(f"[yellow]Warning: Previously registered file no longer exists: {file_path}[/yellow]")
+                continue
 
-        # Add to registry
-        entry = registry.add_target(
-            target_id=metadata.get('name', target_name),
-            path=target_path,
-            entrypoint=entrypoint,
-            model_output=model_output,
-            data=data_files
-        )
+            try:
+                # Rediscover all targets from this file
+                discovered = discover_target_functions(file_path)
+                all_targets_by_file[file_path] = discovered
+            except Exception as e:
+                console.print(f"[yellow]Warning: Could not rediscover targets from {file_path}: {e}[/yellow]")
+                continue
 
-        registered_count += 1
-        console.print(f"✓ Registered {target_name}")
-        console.print(f"  Model output: {model_output}")
-        if data_files:
-            console.print(f"  Data dependencies: {len(data_files)} files")
+    # Now register all discovered targets
+    for file_path, file_targets in all_targets_by_file.items():
+        for target_name, metadata in file_targets:
+            # Extract metadata
+            model_output = metadata.get('model_output', target_name)
+            data_dict = metadata.get('data', {})
+
+            # Convert data dict to list of paths
+            data_files = []
+            for key, path_str in data_dict.items():
+                data_files.append(Path(path_str))
+
+            # Generate entrypoint
+            # Convert file path to module path
+            module_path = str(file_path).replace('/', '.').replace('\\', '.')
+            if module_path.endswith('.py'):
+                module_path = module_path[:-3]
+            entrypoint = f"{module_path}:{target_name}"
+
+            # Add to registry
+            entry = registry.add_target(
+                target_id=metadata.get('name', target_name),
+                path=file_path,
+                entrypoint=entrypoint,
+                model_output=model_output,
+                data=data_files
+            )
+
+            registered_count += 1
+            console.print(f"✓ Registered {target_name} (from {file_path})")
+            console.print(f"  Model output: {model_output}")
+            if data_files:
+                console.print(f"  Data dependencies: {len(data_files)} files")
 
     # Save registry
     registry.save(registry_path)
+
+    # Warn about removed targets
+    new_target_ids = set(registry.targets.keys())
+    removed_target_ids = old_target_ids - new_target_ids
+    if removed_target_ids:
+        console.print(f"\n[yellow]Warning: {len(removed_target_ids)} target(s) were removed:[/yellow]")
+        for tid in sorted(removed_target_ids):
+            console.print(f"  • {tid}")
+        console.print("[dim]These targets were in the registry but are no longer found in their source files.[/dim]")
 
     # Auto-track all registry dependencies
     track_registry_dependencies(ctx, registry)
@@ -1957,6 +2008,11 @@ def register_target(
     # Summary
     if registered_count > 0:
         console.print(f"\n[green]Successfully registered {registered_count} target(s)[/green]")
+
+    # Show what was added vs what existed before
+    added_target_ids = new_target_ids - old_target_ids
+    if added_target_ids:
+        console.print(f"[green]Added {len(added_target_ids)} new target(s)[/green]")
 
 
 @app.command()
@@ -2016,7 +2072,12 @@ def show_registry():
             console.print(f"\n  [cyan]{target_id}[/cyan]")
             console.print(f"    File: {target.path}")
             console.print(f"    Output: {target.model_output}")
-            console.print(f"    Observation: {target.observation}")
+            if target.data:
+                console.print(f"    Data dependencies: {len(target.data)} file(s)")
+                for data_file in target.data[:3]:
+                    console.print(f"      • {data_file}")
+                if len(target.data) > 3:
+                    console.print(f"      ... and {len(target.data) - 3} more")
             if target.target_digest:
                 console.print(f"    Digest: {target.target_digest[:12]}...")
     else:
