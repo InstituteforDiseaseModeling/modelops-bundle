@@ -1540,19 +1540,19 @@ def dev_switch(
         mops-bundle dev switch local    # Switch to local environment
         mops-bundle dev switch dev       # Switch to dev environment
     """
-    from .env_manager import pin_env, ENV_DIR
+    from .env_manager import pin_env, get_env_dir
 
     ctx = require_project_context()
 
     # Check if environment exists
-    env_file = ENV_DIR / f"{env}.yaml"
+    env_file = get_env_dir() / f"{env}.yaml"
     if not env_file.exists():
         console.print(f"[red]✗[/red] Environment '{env}' not found")
-        console.print(f"[dim]Available environments in {ENV_DIR}:[/dim]")
+        console.print(f"[dim]Available environments in {get_env_dir()}:[/dim]")
 
         # List available environments
-        if ENV_DIR.exists():
-            envs = sorted([f.stem for f in ENV_DIR.glob("*.yaml")])
+        if get_env_dir().exists():
+            envs = sorted([f.stem for f in get_env_dir().glob("*.yaml")])
             if envs:
                 for e in envs:
                     console.print(f"  • {e}")
@@ -1581,7 +1581,7 @@ def dev_env():
     Example:
         mops-bundle dev env
     """
-    from .env_manager import read_pinned_env, ENV_DIR
+    from .env_manager import read_pinned_env, get_env_dir
 
     ctx = require_project_context()
 
@@ -1606,8 +1606,8 @@ def dev_env():
 
     # List available environments
     console.print("\n[bold]Available environments:[/bold]")
-    if ENV_DIR.exists():
-        envs = sorted([f.stem for f in ENV_DIR.glob("*.yaml")])
+    if get_env_dir().exists():
+        envs = sorted([f.stem for f in get_env_dir().glob("*.yaml")])
         if envs:
             for env in envs:
                 marker = " [cyan]←[/cyan]" if 'current_env' in locals() and env == current_env else ""
@@ -1615,7 +1615,7 @@ def dev_env():
         else:
             console.print("  [dim]No environments found[/dim]")
     else:
-        console.print(f"  [dim]No environments directory at {ENV_DIR}[/dim]")
+        console.print(f"  [dim]No environments directory at {get_env_dir()}[/dim]")
 
     console.print("\n[dim]Run 'mops infra up' to create cloud environments[/dim]")
     console.print("[dim]Run 'make start' to create local environment[/dim]")

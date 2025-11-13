@@ -410,7 +410,7 @@ wheels = [
 
 [[package]]
 name = "modelops-bundle"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "azure-storage-blob" },
@@ -460,7 +460,7 @@ dev = [
 [[package]]
 name = "modelops-contracts"
 version = "0.1.0"
-source = { git = "https://github.com/institutefordiseasemodeling/modelops-contracts.git#9d023bc513166dcdc207042a52183d63264c7605" }
+source = { git = "https://github.com/institutefordiseasemodeling/modelops-contracts.git#cda4556688b7262f0d975b2165fafef5299b66b8" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },

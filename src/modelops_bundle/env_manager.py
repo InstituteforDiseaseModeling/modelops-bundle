@@ -12,6 +12,19 @@ ENV_PIN_FILE = "env"  # .modelops-bundle/env
 DEFAULT_ENV = "dev"   # Default to dev environment
 ENV_DIR = Path.home() / ".modelops" / "bundle-env"  # ~/.modelops/bundle-env/
 
+
+def get_env_dir() -> Path:
+    """Get environments directory, resolving home dynamically for test isolation.
+
+    This function exists to support test mocking of Path.home(). The module-level
+    ENV_DIR constant is evaluated at import time and cannot be mocked, but this
+    function evaluates Path.home() at call time.
+
+    Returns:
+        Path to environments directory
+    """
+    return Path.home() / ".modelops" / "bundle-env"
+
 def pin_env(project_storage_dir: Path, name: str) -> None:
     """Pin the environment for this project.
 
