@@ -194,18 +194,14 @@ class ModelStatusSnapshot:
     """Complete snapshot of all models' AND targets' states at a point in time."""
     timestamp: datetime
     models: Dict[str, ModelState]
-
-    # Bundle-level info
     bundle_ref: str
     bundle_tag: str
     tracked_files: Set[str]
-
-    # Cloud state
     cloud_manifest_digest: Optional[str]
     cloud_file_digests: Dict[str, str]  # From cloud manifest
     cloud_timestamp: Optional[datetime]
 
-    # Targets (optional, added later)
+    # Targets (optional, added later) - MUST come after fields without defaults
     targets: Dict[str, "TargetState"] = field(default_factory=dict)
 
     @property

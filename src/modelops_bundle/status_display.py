@@ -139,6 +139,9 @@ def display_model_status(snapshot: ModelStatusSnapshot, console: Console):
             for issue in target.issues:
                 console.print(f"  • {target_name}: {issue}")
 
+    # Preflight validation
+    display_preflight_issues(snapshot, console)
+
     # Help text
     console.print("\n[dim]Run 'mops-bundle status --details <model|target>' for specific info[/dim]")
     console.print("[dim]Run 'mops-bundle status --files' for file-level status[/dim]")
@@ -439,4 +442,48 @@ def display_status_legend(console: Console):
     console.print("  [green]✓[/green] Current/Ready   [yellow]⚠[/yellow] Stale/Warning   [red]✗[/red] Missing/Error")
     console.print("  [blue]Local ahead[/blue] = You have changes not in cloud")
     console.print("  [yellow]Local behind[/yellow] = Cloud has newer version")
-    console.print("  [red]Diverged[/red] = Both local and cloud have changes")
+
+
+def display_preflight_issues(snapshot: ModelStatusSnapshot, console: Console):
+    """Display preflight validation warnings and errors in status output.
+
+    Args:
+        snapshot: Status snapshot
+        console: Rich console
+    """
+    from .context import ProjectContext
+    from .preflight import PreflightValidator
+    from modelops_contracts import BundleRegistry
+
+    # Load registry
+    try:
+        ctx = ProjectContext()
+        registry_path = ctx.storage_dir / "registry.yaml"
+        if not registry_path.exists():
+            return
+
+        registry = BundleRegistry.load(registry_path)
+
+        # Run validation
+        validator = PreflightValidator(ctx, registry)
+        result = validator.validate_all()
+
+        # Display warnings
+        if result.warnings:
+            console.print("\n[bold yellow]Preflight Warnings:[/bold yellow]")
+            for issue in result.warnings:
+                console.print(f"  [yellow]⚠[/yellow] {issue.message}")
+                if issue.suggestion:
+                    console.print(f"      [dim]{issue.suggestion}[/dim]")
+
+        # Display errors
+        if result.errors:
+            console.print("\n[bold red]Preflight Errors (will block job submission):[/bold red]")
+            for issue in result.errors:
+                console.print(f"  [red]✗[/red] {issue.message}")
+                if issue.suggestion:
+                    console.print(f"      [dim]{issue.suggestion}[/dim]")
+
+    except Exception as e:
+        # Don't let preflight checks crash status command
+        console.print(f"\n[dim]Note: Preflight validation failed: {e}[/dim]")
