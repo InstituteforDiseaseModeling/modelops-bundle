@@ -102,6 +102,19 @@ def _atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+def _save_registry_atomic(registry: "BundleRegistry", path: Path) -> None:
+    """Atomically save registry to YAML file.
+
+    Uses the existing _atomic_write_text function for crash-safe writes.
+
+    Args:
+        registry: BundleRegistry to save
+        path: Path to registry.yaml file
+    """
+    text = yaml.safe_dump(registry.to_dict(), sort_keys=False)
+    _atomic_write_text(path, text)
+
+
 # ============= Internal Storage Planning =============
 
 @dataclass
@@ -676,8 +689,8 @@ def push_apply(
         for target_entry in registry.targets.values():
             target_entry.compute_digest(ctx.root)
 
-        # Save atomically (registry.save() now uses temp + rename)
-        registry.save(registry_path)
+        # Save atomically using existing atomic write function
+        _save_registry_atomic(registry, registry_path)
 
     # Update sync state
     state = load_state(ctx)
