@@ -484,6 +484,14 @@ def display_preflight_issues(snapshot: ModelStatusSnapshot, console: Console):
                 if issue.suggestion:
                     console.print(f"      [dim]{issue.suggestion}[/dim]")
 
+        # Display info messages
+        if result.infos:
+            console.print("\n[bold blue]Preflight Information:[/bold blue]")
+            for issue in result.infos:
+                console.print(f"  [blue]ℹ[/blue] {issue.message}")
+                if issue.suggestion:
+                    console.print(f"      [dim]{issue.suggestion}[/dim]")
+
     except Exception as e:
         # Don't let preflight checks crash status command
         console.print(f"\n[dim]Note: Preflight validation failed: {e}[/dim]")

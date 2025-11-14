@@ -52,6 +52,11 @@ class ValidationResult:
         return [i for i in self.issues if i.severity == CheckSeverity.WARNING]
 
     @property
+    def infos(self) -> List[ValidationIssue]:
+        """Get only info-level issues."""
+        return [i for i in self.issues if i.severity == CheckSeverity.INFO]
+
+    @property
     def has_blocking_errors(self) -> bool:
         """Check if there are any errors that would block submission."""
         return len(self.errors) > 0
@@ -86,6 +91,9 @@ class PreflightValidator:
         # Warning checks
         issues.extend(self._check_empty_outputs())
         issues.extend(self._check_untracked_files())
+
+        # Info checks
+        issues.extend(self._check_unused_outputs())
 
         return ValidationResult(
             passed=not any(i.severity == CheckSeverity.ERROR for i in issues),
@@ -283,5 +291,37 @@ class PreflightValidator:
                     message=f"Registry references untracked file: {rel_path}",
                     suggestion="Run 'mops-bundle add' to track this file"
                 ))
+
+        return issues
+
+    def _check_unused_outputs(self) -> List[ValidationIssue]:
+        """Check for model outputs without corresponding targets (informational).
+
+        This is purely informational - it's OK for models to have outputs
+        that aren't used by any target. But we inform the user in case they
+        want to add calibration targets for those outputs.
+
+        Returns:
+            List of validation issues
+        """
+        issues = []
+
+        # Build set of outputs used by targets
+        used_outputs: Set[str] = set()
+        for target in self.registry.targets.values():
+            used_outputs.add(target.model_output)
+
+        # Check each model's outputs
+        for model_id, model in self.registry.models.items():
+            for output in model.outputs:
+                if output not in used_outputs:
+                    issues.append(ValidationIssue(
+                        severity=CheckSeverity.INFO,
+                        category="unused_output",
+                        entity_type="model",
+                        entity_id=model_id,
+                        message=f"Model '{model_id}' produces output '{output}' with no corresponding target",
+                        suggestion="Add a target if you want to calibrate against this output"
+                    ))
 
         return issues
