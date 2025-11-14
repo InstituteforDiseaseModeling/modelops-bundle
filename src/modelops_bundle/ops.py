@@ -653,13 +653,32 @@ def push_apply(
     
     # Always use index-based push
     manifest_digest = _push_apply_with_index(config, plan, ctx)
-    
+
     # Verify tag didn't move during push (unless forced)
     if not force:
         final_digest = adapter.get_current_tag_digest(config.registry_ref, plan.tag)
         if final_digest and final_digest != manifest_digest:
             raise TagMovedError(config.registry_ref, plan.tag, manifest_digest, final_digest)
-    
+
+    # Update registry.yaml digests to match pushed files
+    # This ensures local registry reflects cloud state after successful push
+    registry_path = ctx.storage_dir / "registry.yaml"
+    if registry_path.exists():
+        from modelops_contracts import BundleRegistry
+        registry = BundleRegistry.load(registry_path)
+
+        # Compute fresh digests for all models
+        for model_entry in registry.models.values():
+            model_entry.compute_digest(ctx.root)
+            model_entry.compute_dependency_digests(ctx.root)
+
+        # Compute fresh digests for all targets
+        for target_entry in registry.targets.values():
+            target_entry.compute_digest(ctx.root)
+
+        # Save atomically (registry.save() now uses temp + rename)
+        registry.save(registry_path)
+
     # Update sync state
     state = load_state(ctx)
     tracked_snapshot = TrackedWorkingState.from_tracked(
@@ -667,7 +686,7 @@ def push_apply(
     ).snapshot
     state.update_after_push(manifest_digest, tracked_snapshot)
     save_state(state, ctx)
-    
+
     return manifest_digest
 
 

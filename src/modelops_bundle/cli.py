@@ -574,6 +574,7 @@ def status(
     include_ignored: bool = typer.Option(False, "--include-ignored", help="Include ignored files"),
     files: bool = typer.Option(False, "--files", "-f", help="Show file-centric view instead of model view"),
     details: Optional[str] = typer.Option(None, "--details", "-d", help="Show details for specific model or target"),
+    explain: bool = typer.Option(False, "--explain", help="Explain why models are STALE (show digest mismatches)"),
 ):
     """Show model and target status and sync state.
 
@@ -656,7 +657,7 @@ def status(
                     raise typer.Exit(1)
             else:
                 # Show overview
-                display_model_status(snapshot, console)
+                display_model_status(snapshot, console, explain=explain)
 
             # Still show untracked if requested
             if untracked:

@@ -10,12 +10,13 @@ from .model_state import ModelReadiness, ModelState, ModelStatusSnapshot, ModelS
 from .utils import humanize_date, humanize_size
 
 
-def display_model_status(snapshot: ModelStatusSnapshot, console: Console):
+def display_model_status(snapshot: ModelStatusSnapshot, console: Console, explain: bool = False):
     """Display model-centric status view.
 
     Args:
         snapshot: Complete model status snapshot
         console: Rich console for output
+        explain: If True, show detailed explanations for STALE models
     """
     # Header
     console.print(f"\n[bold]Bundle:[/bold] {snapshot.bundle_ref}:{snapshot.bundle_tag}")
@@ -40,7 +41,7 @@ def display_model_status(snapshot: ModelStatusSnapshot, console: Console):
     # Model table
     table = Table(title=f"\nRegistered Models ({len(snapshot.models)})")
     table.add_column("Model", style="cyan")
-    table.add_column("Status")
+    table.add_column("Local")  # Renamed from "Status" for clarity
     table.add_column("Dependencies")
     table.add_column("Last Changed")
     table.add_column("Cloud")
@@ -66,14 +67,14 @@ def display_model_status(snapshot: ModelStatusSnapshot, console: Console):
         # Last changed time (as string for Rich table)
         last_changed = _get_last_changed(model)
 
-        # Cloud sync state with fixed mappings
+        # Cloud sync state with clear, actionable text
         cloud_text = {
-            ModelSyncState.SYNCED: "[green]Synced[/green]",
-            ModelSyncState.AHEAD: "[blue]Local ahead[/blue]",
-            ModelSyncState.BEHIND: "[yellow]Local behind[/yellow]",
-            ModelSyncState.DIVERGED: "[red]Diverged[/red]",
-            ModelSyncState.UNTRACKED: "[dim]Never pushed[/dim]",
-            ModelSyncState.UNKNOWN: "[dim]Unknown[/dim]",
+            ModelSyncState.SYNCED: "[green]✓ SYNCED[/green]",
+            ModelSyncState.AHEAD: "[blue]⚠ AHEAD[/blue]",  # Local has unpushed changes
+            ModelSyncState.BEHIND: "[yellow]⚠ BEHIND[/yellow]",  # Cloud is newer
+            ModelSyncState.DIVERGED: "[red]✗ DIVERGED[/red]",  # Both changed
+            ModelSyncState.UNTRACKED: "[dim]— NOT PUSHED[/dim]",
+            ModelSyncState.UNKNOWN: "[dim]? UNKNOWN[/dim]",
         }[model.cloud_sync_state]
 
         table.add_row(model.name, status_icon, deps_text, last_changed, cloud_text)
@@ -142,9 +143,28 @@ def display_model_status(snapshot: ModelStatusSnapshot, console: Console):
     # Preflight validation
     display_preflight_issues(snapshot, console)
 
+    # Explain mode: Show detailed digest mismatches for STALE models
+    if explain:
+        from .model_state import FileDigestState
+        stale_models = [m for m in snapshot.models.values() if m.local_readiness == ModelReadiness.STALE]
+        if stale_models:
+            console.print("\n[bold]Explanation (why models are STALE):[/bold]")
+            for model in stale_models:
+                console.print(f"\n[yellow]{model.name} → STALE[/yellow]")
+                for dep in model.all_dependencies:
+                    if dep.file_state == FileDigestState.MODIFIED:
+                        expected_short = dep.expected_digest[:16] if dep.expected_digest else "none"
+                        actual_short = dep.actual_digest[:16] if dep.actual_digest else "none"
+                        console.print(f"  {dep.path}")
+                        console.print(f"    tracked: {expected_short}...")
+                        console.print(f"    current: {actual_short}...")
+                console.print(f"[dim]Action: run `mops-bundle push` to publish and refresh digests.[/dim]")
+
     # Help text
     console.print("\n[dim]Run 'mops-bundle status --details <model|target>' for specific info[/dim]")
     console.print("[dim]Run 'mops-bundle status --files' for file-level status[/dim]")
+    if not explain:
+        console.print("[dim]Run 'mops-bundle status --explain' to see digest mismatches[/dim]")
 
 
 def display_model_details(model: ModelState, console: Console):
