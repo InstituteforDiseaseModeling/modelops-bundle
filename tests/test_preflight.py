@@ -363,6 +363,17 @@ class TestPreflightValidator:
         monkeypatch.chdir(tmp_path)
         ctx = ProjectContext.init()
 
+        # Create actual files so imports work
+        model_dir = tmp_path / "models"
+        model_dir.mkdir()
+        (model_dir / "__init__.py").write_text("")
+        (model_dir / "test.py").write_text("class TestModel:\n    pass\n")
+
+        target_dir = tmp_path / "targets"
+        target_dir.mkdir()
+        (target_dir / "__init__.py").write_text("")
+        (target_dir / "test.py").write_text("def target_fn(data_paths):\n    pass\n")
+
         registry = BundleRegistry(
             version="1.0",
             models={
@@ -655,3 +666,165 @@ class TestPreflightValidator:
         assert "missing_file" in error_categories
         assert "empty_outputs" in warning_categories
         assert "unused_output" in info_categories
+
+    def test_check_entrypoints_not_importable_target(self, tmp_path, monkeypatch):
+        """Test that target entrypoints that can't be imported are detected."""
+        monkeypatch.chdir(tmp_path)
+        ctx = ProjectContext.init()
+
+        # Create a target file with a different function name
+        target_dir = tmp_path / "targets"
+        target_dir.mkdir()
+        target_file = target_dir / "test.py"
+        target_file.write_text("""
+def actual_target_function(data_paths):
+    return None
+""")
+
+        # Create __init__.py for importability
+        (target_dir / "__init__.py").write_text("")
+
+        registry = BundleRegistry(
+            version="1.0",
+            models={},
+            targets={
+                "target1": TargetEntry(
+                    path="targets/test.py",
+                    entrypoint="targets.test:wrong_function_name",  # Wrong name!
+                    model_output="incidence",
+                    data=[],
+                    target_digest=None,
+                )
+            },
+        )
+
+        validator = PreflightValidator(ctx, registry)
+        issues = validator._check_entrypoints()
+
+        # Should detect that wrong_function_name doesn't exist
+        assert len(issues) == 1
+        assert issues[0].severity == CheckSeverity.ERROR
+        assert issues[0].category == "missing_entrypoint_symbol"
+        assert "wrong_function_name" in issues[0].message
+
+    def test_check_entrypoints_not_importable_model(self, tmp_path, monkeypatch):
+        """Test that model entrypoints that can't be imported are detected."""
+        monkeypatch.chdir(tmp_path)
+        ctx = ProjectContext.init()
+
+        # Create a model file with a different class name
+        model_dir = tmp_path / "models"
+        model_dir.mkdir()
+        model_file = model_dir / "test.py"
+        model_file.write_text("""
+class ActualModelClass:
+    pass
+""")
+
+        # Create __init__.py for importability
+        (model_dir / "__init__.py").write_text("")
+
+        registry = BundleRegistry(
+            version="1.0",
+            models={
+                "model1": ModelEntry(
+                    entrypoint="models.test:WrongClassName",  # Wrong class!
+                    path="models/test.py",
+                    class_name="WrongClassName",
+                    scenarios=[],
+                    parameters=[],
+                    outputs=["incidence"],
+                    data=[],
+                    data_digests={},
+                    code=[],
+                    code_digests={},
+                    model_digest="sha256:abc123",
+                )
+            },
+            targets={},
+        )
+
+        validator = PreflightValidator(ctx, registry)
+        issues = validator._check_entrypoints()
+
+        # Should detect that WrongClassName doesn't exist
+        assert len(issues) == 1
+        assert issues[0].severity == CheckSeverity.ERROR
+        assert issues[0].category == "missing_entrypoint_symbol"
+        assert "WrongClassName" in issues[0].message
+
+    def test_check_entrypoints_module_not_found(self, tmp_path, monkeypatch):
+        """Test that missing entrypoint files are detected as errors.
+
+        AST-based validation can detect when the entrypoint file itself
+        doesn't exist, which is a structural error that should be caught.
+        """
+        monkeypatch.chdir(tmp_path)
+        ctx = ProjectContext.init()
+
+        registry = BundleRegistry(
+            version="1.0",
+            models={},
+            targets={
+                "target1": TargetEntry(
+                    path="targets/nonexistent.py",
+                    entrypoint="targets.nonexistent:target_fn",  # Module doesn't exist!
+                    model_output="incidence",
+                    data=[],
+                    target_digest=None,
+                )
+            },
+        )
+
+        validator = PreflightValidator(ctx, registry)
+        issues = validator._check_entrypoints()
+
+        # Should report error for missing entrypoint file
+        assert len(issues) == 1
+        assert issues[0].severity == CheckSeverity.ERROR
+        assert issues[0].category == "missing_entrypoint_file"
+        assert "target1" in issues[0].entity_id
+
+    def test_check_entrypoints_syntax_error(self, tmp_path, monkeypatch):
+        """Test that syntax errors in entrypoint files are detected."""
+        monkeypatch.chdir(tmp_path)
+        ctx = ProjectContext.init()
+
+        # Create model directory with syntax error
+        model_dir = tmp_path / "models"
+        model_dir.mkdir()
+        (model_dir / "bad_syntax.py").write_text("""
+# This file has a syntax error
+def my_function(
+    print("missing closing paren")
+""")
+
+        registry = BundleRegistry(
+            version="1.0",
+            models={
+                "model1": ModelEntry(
+                    entrypoint="models.bad_syntax:MyModel",
+                    path="models/bad_syntax.py",
+                    class_name="MyModel",
+                    scenarios=[],
+                    parameters=[],
+                    outputs=["result"],
+                    data=[],
+                    data_digests={},
+                    code=[],
+                    code_digests={},
+                    model_digest="sha256:abc123",
+                )
+            },
+            targets={},
+        )
+
+        validator = PreflightValidator(ctx, registry)
+        issues = validator._check_entrypoints()
+
+        # Should detect syntax error
+        assert len(issues) == 1
+        assert issues[0].severity == CheckSeverity.ERROR
+        assert issues[0].category == "syntax_error"
+        assert "line" in issues[0].message.lower()
+        assert "model1" in issues[0].entity_id

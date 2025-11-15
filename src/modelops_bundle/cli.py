@@ -130,7 +130,7 @@ def require_project_context() -> ProjectContext:
         console.print("[dim]Hint: Check you're in the right directory[/dim]")
         console.print()
         console.print("To initialize a new project, run:")
-        console.print("  [cyan]mops-bundle init[/cyan] or [cyan]mops-bundle init --env local[/cyan]")
+        console.print("  [cyan]mops-bundle init[/cyan]")
         raise typer.Exit(1)
 
 
@@ -161,6 +161,55 @@ def track_registry_dependencies(ctx: ProjectContext, registry: "BundleRegistry")
 
     # Save updated tracking
     save_tracked(tracked, ctx)
+
+
+def run_preflight_validation(ctx: ProjectContext) -> None:
+    """Run preflight validation and block if errors found.
+
+    Checks:
+    - registry.yaml exists
+    - All models and targets are valid
+    - Files exist
+    - Entrypoints are correct
+
+    Args:
+        ctx: Project context
+
+    Raises:
+        typer.Exit: If validation fails with blocking errors
+    """
+    from modelops_contracts import BundleRegistry
+    from .preflight import PreflightValidator
+
+    # Check registry exists
+    registry_path = ctx.storage_dir / "registry.yaml"
+    if not registry_path.exists():
+        console.print("[red]✗ No registry found at .modelops-bundle/registry.yaml[/red]")
+        console.print("[yellow]Register models with: mops-bundle register-model <path>[/yellow]")
+        console.print("[yellow]Register targets with: mops-bundle register-target <path>[/yellow]")
+        raise typer.Exit(1)
+
+    # Load registry and run validation
+    registry = BundleRegistry.load(registry_path)
+    validator = PreflightValidator(ctx, registry)
+    result = validator.validate_all()
+
+    # Block if there are errors
+    if result.has_blocking_errors:
+        console.print("[red]✗ Preflight validation failed with blocking errors:[/red]")
+        for issue in result.errors:
+            console.print(f"  [red]•[/red] {issue.message}")
+            if issue.suggestion:
+                console.print(f"    [dim]{issue.suggestion}[/dim]")
+        raise typer.Exit(1)
+
+    # Show warnings if any (non-blocking)
+    if result.warnings:
+        console.print("[yellow]⚠ Preflight warnings:[/yellow]")
+        for issue in result.warnings:
+            console.print(f"  [yellow]•[/yellow] {issue.message}")
+            if issue.suggestion:
+                console.print(f"    [dim]{issue.suggestion}[/dim]")
 
 
 def display_remote_status(status: "RemoteStatus", registry_ref: str, reference: str = "latest") -> None:
@@ -906,6 +955,9 @@ def push(
         mops-bundle push --dry-run      # Preview what would be pushed
     """
     ctx = require_project_context()
+
+    # Run preflight validation (blocks if errors found)
+    run_preflight_validation(ctx)
 
     # Load environment and set up storage credentials
     load_env_for_command(ctx.storage_dir, require_storage=True)

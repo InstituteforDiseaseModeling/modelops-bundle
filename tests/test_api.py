@@ -61,6 +61,12 @@ def test_push_dir_basic_flow(tmp_path, monkeypatch):
     )
     save_config(config, ctx)
 
+    # Create minimal registry.yaml (required by preflight validation)
+    from modelops_contracts import BundleRegistry
+    registry = BundleRegistry(version="1.0", models={}, targets={})
+    registry_path = ctx.storage_dir / "registry.yaml"
+    registry.save(registry_path)
+
     # Create some tracked files
     test_file = tmp_path / "model.py"
     test_file.write_text("# test model")
@@ -102,6 +108,13 @@ def test_push_dir_with_custom_tag(tmp_path, monkeypatch):
 
     config = BundleConfig(registry_ref="localhost:5555/test-project")
     save_config(config, ctx)
+
+    # Create minimal registry.yaml (required by preflight validation)
+    from modelops_contracts import BundleRegistry
+    registry = BundleRegistry(version="1.0", models={}, targets={})
+    registry_path = ctx.storage_dir / "registry.yaml"
+    registry.save(registry_path)
+
     save_tracked(TrackedFiles(), ctx)
     save_state(SyncState(), ctx)
 

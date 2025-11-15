@@ -35,6 +35,7 @@ def push_dir(path: str = ".", tag: Optional[str] = None) -> str:
 
     Raises:
         FileNotFoundError: If path doesn't contain .modelops-bundle
+        RuntimeError: If preflight validation fails with blocking errors
         Various registry/network errors on push failure
 
     Example:
@@ -45,6 +46,27 @@ def push_dir(path: str = ".", tag: Optional[str] = None) -> str:
         sha256:abc123...
     """
     ctx = ProjectContext(Path(path))
+
+    # Run preflight validation (same check as CLI push command)
+    from modelops_contracts import BundleRegistry
+    from .preflight import PreflightValidator
+
+    registry_path = ctx.storage_dir / "registry.yaml"
+    if not registry_path.exists():
+        raise FileNotFoundError(
+            f"No registry found at {registry_path}. "
+            "Register models with: mops-bundle register-model <path>"
+        )
+
+    registry = BundleRegistry.load(registry_path)
+    validator = PreflightValidator(ctx, registry)
+    result = validator.validate_all()
+
+    if result.has_blocking_errors:
+        error_messages = [issue.message for issue in result.errors]
+        raise RuntimeError(
+            f"Preflight validation failed with blocking errors:\n" + "\n".join(f"  • {msg}" for msg in error_messages)
+        )
 
     # Load bundle configuration and tracked files
     config = load_config(ctx)

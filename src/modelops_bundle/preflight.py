@@ -7,6 +7,7 @@ Validates that bundles are ready for job submission by checking:
 - Dependency health
 """
 
+import ast
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -211,14 +212,80 @@ class PreflightValidator:
 
         return issues
 
+    def _module_to_file(self, module_path: str) -> Optional[Path]:
+        """Convert module path to file path.
+
+        Args:
+            module_path: Module path like 'models.sir' or 'targets.incidence'
+
+        Returns:
+            Absolute path to the file, or None if not found
+        """
+        # Convert 'models.sir' -> 'models/sir.py'
+        parts = module_path.split('.')
+        rel_path = Path(*parts).with_suffix('.py')
+        abs_path = self.ctx.root / rel_path
+
+        return abs_path if abs_path.exists() else None
+
+    def _parse_file_ast(self, file_path: Path) -> tuple[Optional[ast.Module], Optional[Exception]]:
+        """Parse Python file using AST without executing code.
+
+        Args:
+            file_path: Path to Python file
+
+        Returns:
+            Tuple of (AST module, error). If successful, (module, None). If failed, (None, error).
+        """
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                source = f.read()
+            tree = ast.parse(source, filename=str(file_path))
+            return tree, None
+        except SyntaxError as e:
+            return None, e
+        except Exception as e:
+            return None, e
+
+    def _symbol_in_ast(self, tree: ast.Module, name: str, kind: str) -> bool:
+        """Check if a class or function exists in the AST.
+
+        Args:
+            tree: Parsed AST module
+            name: Name of the symbol to find
+            kind: Either "class" or "function"
+
+        Returns:
+            True if symbol exists, False otherwise
+        """
+        if kind == "class":
+            return any(
+                isinstance(node, ast.ClassDef) and node.name == name
+                for node in ast.walk(tree)
+            )
+        elif kind == "function":
+            return any(
+                isinstance(node, ast.FunctionDef) and node.name == name
+                for node in ast.walk(tree)
+            )
+        return False
+
     def _check_entrypoints(self) -> List[ValidationIssue]:
-        """Validate entrypoints have correct format.
+        """Validate entrypoints using AST parsing (no code execution).
+
+        This validates that entrypoints are structurally correct without
+        requiring bundle dependencies to be installed. Checks:
+        1. Format is 'module.path:ClassName' or 'module.path:function_name'
+        2. File exists for the module path
+        3. File has valid Python syntax
+        4. Class/function name exists in the AST
 
         Returns:
             List of validation issues
         """
         issues = []
 
+        # Check model entrypoints
         for model_id, model in self.registry.models.items():
             # Basic validation: entrypoint has module:class format
             if ':' not in model.entrypoint:
@@ -230,8 +297,60 @@ class PreflightValidator:
                     message=f"Invalid entrypoint format: {model.entrypoint}",
                     suggestion="Use format 'module.path:ClassName'"
                 ))
+                continue
 
+            module_path, class_name = model.entrypoint.rsplit(':', 1)
+
+            # Step 1: Check file exists
+            file_path = self._module_to_file(module_path)
+            if not file_path:
+                issues.append(ValidationIssue(
+                    severity=CheckSeverity.ERROR,
+                    category="missing_entrypoint_file",
+                    entity_type="model",
+                    entity_id=model_id,
+                    message=f"Module file not found for entrypoint '{model.entrypoint}'",
+                    suggestion=f"Expected file: {module_path.replace('.', '/')}.py"
+                ))
+                continue
+
+            # Step 2: Parse file with AST (no execution)
+            tree, error = self._parse_file_ast(file_path)
+            if error:
+                if isinstance(error, SyntaxError):
+                    issues.append(ValidationIssue(
+                        severity=CheckSeverity.ERROR,
+                        category="syntax_error",
+                        entity_type="model",
+                        entity_id=model_id,
+                        message=f"Syntax error in {file_path.name} line {error.lineno}: {error.msg}",
+                        suggestion=f"Fix syntax error in {file_path}"
+                    ))
+                else:
+                    issues.append(ValidationIssue(
+                        severity=CheckSeverity.ERROR,
+                        category="parse_error",
+                        entity_type="model",
+                        entity_id=model_id,
+                        message=f"Cannot parse {file_path.name}: {error}",
+                        suggestion=f"Check file encoding and syntax in {file_path}"
+                    ))
+                continue
+
+            # Step 3: Check class exists in AST
+            if not self._symbol_in_ast(tree, class_name, "class"):
+                issues.append(ValidationIssue(
+                    severity=CheckSeverity.ERROR,
+                    category="missing_entrypoint_symbol",
+                    entity_type="model",
+                    entity_id=model_id,
+                    message=f"Class '{class_name}' not found in {file_path.name}",
+                    suggestion=f"Define class '{class_name}' in {file_path} or update entrypoint"
+                ))
+
+        # Check target entrypoints
         for target_id, target in self.registry.targets.items():
+            # Basic validation: entrypoint has module:function format
             if ':' not in target.entrypoint:
                 issues.append(ValidationIssue(
                     severity=CheckSeverity.ERROR,
@@ -240,6 +359,56 @@ class PreflightValidator:
                     entity_id=target_id,
                     message=f"Invalid entrypoint format: {target.entrypoint}",
                     suggestion="Use format 'module.path:function_name'"
+                ))
+                continue
+
+            module_path, function_name = target.entrypoint.rsplit(':', 1)
+
+            # Step 1: Check file exists
+            file_path = self._module_to_file(module_path)
+            if not file_path:
+                issues.append(ValidationIssue(
+                    severity=CheckSeverity.ERROR,
+                    category="missing_entrypoint_file",
+                    entity_type="target",
+                    entity_id=target_id,
+                    message=f"Module file not found for entrypoint '{target.entrypoint}'",
+                    suggestion=f"Expected file: {module_path.replace('.', '/')}.py"
+                ))
+                continue
+
+            # Step 2: Parse file with AST (no execution)
+            tree, error = self._parse_file_ast(file_path)
+            if error:
+                if isinstance(error, SyntaxError):
+                    issues.append(ValidationIssue(
+                        severity=CheckSeverity.ERROR,
+                        category="syntax_error",
+                        entity_type="target",
+                        entity_id=target_id,
+                        message=f"Syntax error in {file_path.name} line {error.lineno}: {error.msg}",
+                        suggestion=f"Fix syntax error in {file_path}"
+                    ))
+                else:
+                    issues.append(ValidationIssue(
+                        severity=CheckSeverity.ERROR,
+                        category="parse_error",
+                        entity_type="target",
+                        entity_id=target_id,
+                        message=f"Cannot parse {file_path.name}: {error}",
+                        suggestion=f"Check file encoding and syntax in {file_path}"
+                    ))
+                continue
+
+            # Step 3: Check function exists in AST
+            if not self._symbol_in_ast(tree, function_name, "function"):
+                issues.append(ValidationIssue(
+                    severity=CheckSeverity.ERROR,
+                    category="missing_entrypoint_symbol",
+                    entity_type="target",
+                    entity_id=target_id,
+                    message=f"Function '{function_name}' not found in {file_path.name}",
+                    suggestion=f"Define function '{function_name}' in {file_path} or update entrypoint"
                 ))
 
         return issues
