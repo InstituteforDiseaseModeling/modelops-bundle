@@ -92,6 +92,7 @@ class PreflightValidator:
         # Warning checks
         issues.extend(self._check_empty_outputs())
         issues.extend(self._check_untracked_files())
+        issues.extend(self._check_package_structure())
 
         # Info checks
         issues.extend(self._check_unused_outputs())
@@ -492,5 +493,89 @@ class PreflightValidator:
                         message=f"Model '{model_id}' produces output '{output}' with no corresponding target",
                         suggestion="Add a target if you want to calibrate against this output"
                     ))
+
+        return issues
+
+    def _check_package_structure(self) -> List[ValidationIssue]:
+        """Check that directories in import paths have __init__.py files.
+
+        This validates that any directory that needs to be a Python package
+        (i.e., is part of an entrypoint module path) has an __init__.py file.
+        Without these files, Python cannot import modules from the directory.
+
+        Examples:
+        - entrypoint "models.sir:SIRModel" requires models/__init__.py
+        - entrypoint "targets.incidence:target_fn" requires targets/__init__.py
+
+        Returns:
+            List of validation issues (warnings for missing __init__.py)
+        """
+        issues = []
+        # Track which directories need __init__.py and why
+        needed_dirs: Dict[Path, Set[str]] = {}
+
+        # Check model entrypoints
+        for model_id, model in self.registry.models.items():
+            if ':' not in model.entrypoint:
+                continue
+
+            module_path, _ = model.entrypoint.rsplit(':', 1)
+            parts = module_path.split('.')
+
+            # Check each parent directory in the module path
+            # e.g., "models.submodule.sir" checks "models/" and "models/submodule/"
+            for i in range(1, len(parts) + 1):
+                dir_parts = parts[:i]
+                dir_path = self.ctx.root / Path(*dir_parts)
+
+                # Skip if not a directory or is a hidden/build directory
+                if not dir_path.is_dir():
+                    continue
+                if any(p.startswith('.') or p in ('__pycache__', 'build', 'dist', 'egg-info')
+                       for p in dir_parts):
+                    continue
+
+                # Record that this directory needs __init__.py
+                if dir_path not in needed_dirs:
+                    needed_dirs[dir_path] = set()
+                needed_dirs[dir_path].add(f"model '{model_id}'")
+
+        # Check target entrypoints
+        for target_id, target in self.registry.targets.items():
+            if ':' not in target.entrypoint:
+                continue
+
+            module_path, _ = target.entrypoint.rsplit(':', 1)
+            parts = module_path.split('.')
+
+            for i in range(1, len(parts) + 1):
+                dir_parts = parts[:i]
+                dir_path = self.ctx.root / Path(*dir_parts)
+
+                if not dir_path.is_dir():
+                    continue
+                if any(p.startswith('.') or p in ('__pycache__', 'build', 'dist', 'egg-info')
+                       for p in dir_parts):
+                    continue
+
+                if dir_path not in needed_dirs:
+                    needed_dirs[dir_path] = set()
+                needed_dirs[dir_path].add(f"target '{target_id}'")
+
+        # Check each directory for __init__.py
+        for dir_path, entities in needed_dirs.items():
+            init_file = dir_path / "__init__.py"
+            if not init_file.exists():
+                rel_dir = self.ctx.to_project_relative(dir_path)
+                entities_list = sorted(entities)
+
+                issues.append(ValidationIssue(
+                    severity=CheckSeverity.WARNING,
+                    category="missing_init_file",
+                    entity_type="registry",
+                    entity_id=None,
+                    message=f"Directory '{rel_dir}' is a Python package but missing __init__.py (needed by {', '.join(entities_list[:3])})",
+                    suggestion=f"Create the file: touch {rel_dir}/__init__.py"
+                ))
 
         return issues
