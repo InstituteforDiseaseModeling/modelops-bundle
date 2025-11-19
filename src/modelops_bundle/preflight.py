@@ -93,6 +93,7 @@ class PreflightValidator:
         issues.extend(self._check_empty_outputs())
         issues.extend(self._check_untracked_files())
         issues.extend(self._check_package_structure())
+        issues.extend(self._check_pyproject_tracked())
 
         # Info checks
         issues.extend(self._check_unused_outputs())
@@ -460,6 +461,37 @@ class PreflightValidator:
                     entity_id=None,
                     message=f"Registry references untracked file: {rel_path}",
                     suggestion="Run 'mops-bundle add' to track this file"
+                ))
+
+        return issues
+
+    def _check_pyproject_tracked(self) -> List[ValidationIssue]:
+        """Check if pyproject.toml exists but is not tracked.
+
+        This is critical because workers need pyproject.toml to install
+        bundle dependencies. Without it, all imports will fail.
+
+        Returns:
+            List of validation issues
+        """
+        from .ops import load_tracked
+
+        issues = []
+        pyproject_path = self.ctx.root / "pyproject.toml"
+
+        if pyproject_path.exists():
+            tracked = load_tracked(self.ctx)
+            tracked_set = set(tracked.files)
+            rel_path = "pyproject.toml"
+
+            if rel_path not in tracked_set:
+                issues.append(ValidationIssue(
+                    severity=CheckSeverity.ERROR,
+                    category="missing_dependency_file",
+                    entity_type="bundle",
+                    entity_id=None,
+                    message="pyproject.toml exists but is not tracked",
+                    suggestion="Run 'mops-bundle add pyproject.toml' to track dependencies"
                 ))
 
         return issues
