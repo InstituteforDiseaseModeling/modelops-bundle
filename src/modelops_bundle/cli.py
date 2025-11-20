@@ -1676,7 +1676,6 @@ def dev_env():
     console.print("[dim]Run 'make start' to create local environment[/dim]")
 
 
-@app.command()
 def _module_path_from_file(file_path: Path) -> str:
     module_path = str(file_path).replace("/", ".").replace("\\", ".")
     if module_path.endswith(".py"):
@@ -1684,6 +1683,7 @@ def _module_path_from_file(file_path: Path) -> str:
     return module_path
 
 
+@app.command()
 def register_model(
     model_path: Path = typer.Argument(..., help="Path to Python file containing model(s)"),
     classes: Optional[List[str]] = typer.Option(None, "--class", "-c", help="Specific class names to register (auto-discovers if not provided)"),
