@@ -367,3 +367,7 @@ MIT
 
 - **Issues**: [GitHub Issues](https://github.com/institutefordiseasemodeling/modelops-bundle/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/institutefordiseasemodeling/modelops-bundle/discussions)
+
+## Documentation
+
+All bundle-specific design notes now live under [`docs/`](docs/). Start with [`docs/index.md`](docs/index.md) for the curated list of active guides (cache locking, provenance, ORAS) and the archived implementation plans.
