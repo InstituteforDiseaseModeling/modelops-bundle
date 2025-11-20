@@ -2003,17 +2003,22 @@ def list_registry(
         if not model_match(model):
             continue
         shown_models = True
-        aliases = f" aliases={model.aliases}" if model.aliases else ""
-        console.print(f"  {model_id:20} entry={model.entrypoint} outputs={model.outputs} labels={model.labels}{aliases}")
+        aliases = getattr(model, "aliases", None) or []
+        labels = getattr(model, "labels", {})
+        aliases_str = f" aliases={aliases}" if aliases else ""
+        console.print(
+            f"  {model_id:20} entry={model.entrypoint} outputs={model.outputs} labels={labels}{aliases_str}"
+        )
     if not shown_models:
         console.print("  (no models)")
 
     console.print("\n[bold]Targets[/bold]")
-    if registry.target_sets:
+    target_sets = getattr(registry, "target_sets", {})
+    if target_sets:
         console.print("[dim]Target sets:[/dim]")
-        for name, ts in registry.target_sets.items():
-            weights = ", ".join(f"{k}:{v}" for k, v in ts.weights.items()) or "-"
-            console.print(f"  {name:12} -> {', '.join(ts.targets)} (weights: {weights})")
+        for name, ts in target_sets.items():
+            weights = ", ".join(f"{k}:{v}" for k, v in getattr(ts, "weights", {}).items()) or "-"
+            console.print(f"  {name:12} -> {', '.join(getattr(ts, 'targets', []))} (weights: {weights})")
         console.print()
 
     def target_match(entry):
@@ -2029,8 +2034,9 @@ def list_registry(
         if not target_match(target):
             continue
         shown_targets = True
+        labels = getattr(target, "labels", {})
         console.print(
-            f"  {target_id:20} entry={target.entrypoint} output={target.model_output} labels={target.labels} weight={target.weight}"
+            f"  {target_id:20} entry={target.entrypoint} output={target.model_output} labels={labels} weight={target.weight}"
         )
     if not shown_targets:
         console.print("  (no targets)")
