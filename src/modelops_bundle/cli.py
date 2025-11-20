@@ -1997,7 +1997,12 @@ def list_registry(
 
     registry = BundleRegistry.load(registry_path)
 
-    model_table = Table(show_header=True, header_style="bold white")
+    model_table = Table(
+        show_header=True,
+        header_style="bold white",
+        title="Registered Models",
+        title_style="bold",
+    )
     model_table.add_column("Model", style="cyan")
     model_table.add_column("Entrypoint", style="white")
     model_table.add_column("Outputs", style="white")
@@ -2023,13 +2028,8 @@ def list_registry(
         model_table.add_row(model_id, model.entrypoint, outputs, labels, aliases)
         model_rows += 1
 
-    console.print("[bold]Models[/bold]")
-    if model_rows:
-        console.print(model_table)
-    else:
-        console.print("  (no models)")
-
-    console.print("\n[bold]Targets[/bold]")
+    console.print(model_table if model_rows else "  (no models)")
+    console.print()
     target_sets = getattr(registry, "target_sets", {})
     if target_sets:
         ts_table = Table(show_header=True, header_style="bold magenta")
@@ -2042,7 +2042,12 @@ def list_registry(
             ts_table.add_row(name, targets, weights)
         console.print(ts_table)
 
-    target_table = Table(show_header=True, header_style="bold white")
+    target_table = Table(
+        show_header=True,
+        header_style="bold white",
+        title="Registered Targets",
+        title_style="bold",
+    )
     target_table.add_column("Target", style="cyan")
     target_table.add_column("Entrypoint", style="white")
     target_table.add_column("Model Output", style="white")
@@ -2068,10 +2073,7 @@ def list_registry(
         target_table.add_row(target_id, target.entrypoint, target.model_output, labels, weight_str)
         target_rows += 1
 
-    if target_rows:
-        console.print(target_table)
-    else:
-        console.print("  (no targets)")
+    console.print(target_table if target_rows else "  (no targets)")
 
 
 @app.command()
