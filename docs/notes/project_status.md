@@ -52,7 +52,7 @@ Features:
 - **Smart Auto-Discovery**: When no `--class` specified, finds all BaseModel subclasses
 - **Multiple Registration**: Can register multiple classes with same dependencies
 - **Exclusion**: `--exclude` flag to skip helper/abstract classes
-- **Confirmation**: Shows discovered classes before registering (can disable with `--no-confirm`)
+- **Confirmation**: Non-interactive (per file auto-prune) – no flags needed
 
 **B. `register-target` Command**
 - Registers calibration targets with their observation data
@@ -116,11 +116,11 @@ class NetworkSIR(StochasticSIR):
 ```bash
 # Auto-discovery (found 3 models)
 /Users/vsb/projects/work/modelops-bundle/.venv/bin/python -m modelops_bundle.cli \
-  register-model src/model.py --data data/data.csv --no-confirm
+  register-model src/model.py --data data/data.csv
 
 # With exclusion (found 2 models)
 /Users/vsb/projects/work/modelops-bundle/.venv/bin/python -m modelops_bundle.cli \
-  register-model test_models.py --exclude AbstractBase --no-confirm
+  register-model test_models.py --exclude AbstractBase
 
 # Explicit selection
 /Users/vsb/projects/work/modelops-bundle/.venv/bin/python -m modelops_bundle.cli \
@@ -156,7 +156,7 @@ endif
 	@echo "  cd dev/sample_projects/$(NAME)"
 	@echo "  mops-bundle init --env local"
 	@echo "  mops-bundle add ."
-	@echo "  mops-bundle register-model src/model.py --data data/data.csv --no-confirm"
+	@echo "  mops-bundle register-model src/model.py --data data/data.csv"
 	@echo "  mops-bundle push"
 ```
 
@@ -234,7 +234,7 @@ Makefile (MODIFIED) - Fixed sample-create target
    cd dev/sample_projects/test_epi_model
    mops-bundle init --env local
    mops-bundle add .
-   mops-bundle register-model src/model.py --data data/data.csv --no-confirm
+   mops-bundle register-model src/model.py --data data/data.csv
    mops-bundle show-registry
    mops-bundle push
    ```

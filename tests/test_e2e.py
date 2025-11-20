@@ -441,7 +441,6 @@ def test_full_workflow_with_cli_commands(sample_project, registry_ref, monkeypat
         "model.py",
         "--class",
         "StochasticSIR",
-        "--no-confirm",
     )
     assert result.returncode == 0
     
