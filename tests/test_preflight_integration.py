@@ -84,6 +84,7 @@ class TestPreflightCLIIntegration:
         # Create model file
         models_dir = tmp_path / "models"
         models_dir.mkdir()
+        (models_dir / "__init__.py").write_text("")
         (models_dir / "test.py").write_text("class TestModel: pass")
 
         # Track the file
@@ -133,10 +134,12 @@ class TestPreflightCLIIntegration:
         # Create model and target files
         models_dir = tmp_path / "models"
         models_dir.mkdir()
+        (models_dir / "__init__.py").write_text("")
         (models_dir / "test.py").write_text("class TestModel: pass")
 
         targets_dir = tmp_path / "targets"
         targets_dir.mkdir()
+        (targets_dir / "__init__.py").write_text("")
         (targets_dir / "test.py").write_text("def target_fn(): pass")
 
         # Track files
@@ -196,10 +199,12 @@ class TestPreflightCLIIntegration:
         # Create model and target files
         models_dir = tmp_path / "models"
         models_dir.mkdir()
+        (models_dir / "__init__.py").write_text("")
         (models_dir / "test.py").write_text("class TestModel: pass")
 
         targets_dir = tmp_path / "targets"
         targets_dir.mkdir()
+        (targets_dir / "__init__.py").write_text("")
         (targets_dir / "test.py").write_text("def target_fn(): pass")
 
         # Track files

@@ -429,6 +429,16 @@ def test_full_workflow_with_cli_commands(sample_project, registry_ref, monkeypat
     result = run_cli("status")
     assert result.returncode == 0
     assert "src/model.py" in result.stdout
+
+    # Register at least one model so push has a registry to work with
+    result = run_cli(
+        "register-model",
+        "src/model.py",
+        "--class",
+        "StochasticSIR",
+        "--no-confirm",
+    )
+    assert result.returncode == 0
     
     # Push (no confirmation needed anymore)
     result = run_cli("push")
@@ -440,5 +450,4 @@ def test_full_workflow_with_cli_commands(sample_project, registry_ref, monkeypat
     result = run_cli("status")
     assert result.returncode == 0
     # Should show files as unchanged if remote is accessible
-
 

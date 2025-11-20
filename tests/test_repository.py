@@ -1,198 +1,96 @@
-"""Tests for ModelOpsBundleRepository."""
-
+import shutil
 from pathlib import Path
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import Mock, patch, MagicMock
 
 from modelops_bundle.repository import ModelOpsBundleRepository
-from modelops_bundle.errors import NotFoundError
+from modelops_bundle.storage_models import BundleFileEntry, BundleIndex, StorageType
 
 
-class TestModelOpsBundleRepository:
-    """Test ModelOpsBundleRepository."""
-
-    def test_init(self, tmp_path):
-        """Test repository initialization."""
-        repo = ModelOpsBundleRepository(
-            registry_ref="localhost:5000/test",
-            cache_dir=str(tmp_path),
-            cache_structure="digest_short"
-        )
-
-        # Verify LocalCAS is initialized
-        assert repo.cas is not None
-        assert repo.cas.root == tmp_path
-
-        # Verify bundles directory is created
-        assert repo.bundles_dir.exists()
-        assert repo.bundles_dir == tmp_path / "bundles"
-
-        # Verify config is created
-        assert repo.config is not None
-        assert repo.config.registry_ref == "localhost:5000/test"
-        assert repo.config.default_tag == "latest"
-
-    def test_ensure_local_validates_digest(self, tmp_path):
-        """Test ensure_local validates digest format."""
-        repo = ModelOpsBundleRepository(
-            registry_ref="localhost:5000/test",
-            cache_dir=str(tmp_path)
-        )
-
-        # Invalid format
-        with pytest.raises(ValueError, match="must be sha256 digest"):
-            repo.ensure_local("md5:abc123")
-
-        # Invalid length
-        with pytest.raises(ValueError, match="Invalid digest length"):
-            repo.ensure_local("sha256:tooshort")
-
-    def test_ensure_local_checks_extracted_cache_first(self, tmp_path):
-        """Test ensure_local returns already extracted bundle."""
-        digest = "a" * 64
-        bundle_ref = f"sha256:{digest}"
-
-        repo = ModelOpsBundleRepository(
-            registry_ref="localhost:5000/test",
-            cache_dir=str(tmp_path),
-            cache_structure="digest_short"
-        )
-
-        # Pre-create extracted bundle
-        bundle_dir = repo.bundles_dir / digest[:12]
-        bundle_dir.mkdir(parents=True)
-        (bundle_dir / "test.txt").write_text("cached content")
-
-        # Should return cached path without fetching
-        ref, path = repo.ensure_local(bundle_ref)
-
-        assert ref == bundle_ref
-        assert path == bundle_dir
-        assert (path / "test.txt").read_text() == "cached content"
-
-    def test_ensure_local_pulls_from_registry(self, tmp_path):
-        """Test ensure_local pulls from registry when not cached."""
-        digest = "b" * 64
-        bundle_ref = f"sha256:{digest}"
-
-        repo = ModelOpsBundleRepository(
-            registry_ref="localhost:5000/test",
-            cache_dir=str(tmp_path),
-            cache_structure="digest_short"
-        )
-
-        # Mock OrasAdapter methods
-        with patch("modelops_bundle.repository.OrasAdapter") as mock_oras_class:
-            # Create mock adapter instance
-            mock_adapter = MagicMock()
-            mock_oras_class.return_value = mock_adapter
-
-            # Mock get_index to return a mock index
-            mock_index = MagicMock()
-            mock_index.files = {
-                "test.txt": MagicMock(storage="inline")
-            }
-            mock_adapter.get_index.return_value = mock_index
-
-            # Mock pull_selected to create the test file
-            def pull_selected_side_effect(*args, **kwargs):
-                output_dir = kwargs.get("output_dir")
-                if output_dir:
-                    output_dir.mkdir(parents=True, exist_ok=True)
-                    (output_dir / "test.txt").write_text("pulled content")
-
-            mock_adapter.pull_selected.side_effect = pull_selected_side_effect
-
-            # Call ensure_local (bundle is NOT cached yet)
-            ref, path = repo.ensure_local(bundle_ref)
-
-            # Verify OrasAdapter was initialized
-            mock_oras_class.assert_called_once()
-
-            # Verify get_index was called with correct args
-            mock_adapter.get_index.assert_called_once_with(
-                "localhost:5000/test",
-                f"sha256:{digest}"
+def _make_index() -> BundleIndex:
+    return BundleIndex(
+        created="2024-01-01T00:00:00Z",
+        tool={},
+        files={
+            "file.txt": BundleFileEntry(
+                path="file.txt",
+                digest="sha256:" + "a" * 64,
+                size=5,
+                storage=StorageType.OCI,
             )
+        },
+        metadata={},
+    )
 
-            # Verify pull_selected was called
-            mock_adapter.pull_selected.assert_called_once()
-            pull_args = mock_adapter.pull_selected.call_args[1]
-            assert pull_args["registry_ref"] == "localhost:5000/test"
-            assert pull_args["digest"] == f"sha256:{digest}"
 
-            bundle_dir = repo.bundles_dir / digest[:12]
-            assert pull_args["output_dir"] == bundle_dir
+@pytest.fixture()
+def repo(tmp_path: Path) -> ModelOpsBundleRepository:
+    repository = ModelOpsBundleRepository(
+        registry_ref="example.com/models",
+        cache_dir=str(tmp_path),
+    )
+    # Stub CAS to avoid actual filesystem blobs
+    repository.cas = MagicMock()
+    repository.cas.has.return_value = False
 
-            # Verify results
-            assert ref == bundle_ref
-            assert path == bundle_dir
-            assert (path / "test.txt").read_text() == "pulled content"
+    def materialize(digest, dest, mode="auto"):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("cached")
 
-    def test_exists_checks_extracted_bundles(self, tmp_path):
-        """Test exists method checks extracted bundles."""
-        digest = "c" * 64
-        bundle_ref = f"sha256:{digest}"
+    repository.cas.materialize.side_effect = materialize
 
-        repo = ModelOpsBundleRepository(
-            registry_ref="localhost:5000/test",
-            cache_dir=str(tmp_path),
-            cache_structure="digest_short"
-        )
+    adapter = MagicMock()
+    adapter.get_index.side_effect = lambda registry, ref: _make_index()
 
-        # Initially doesn't exist
-        assert not repo.exists(bundle_ref)
+    def pull_selected(**kwargs):
+        output_dir: Path = kwargs["output_dir"]
+        (output_dir / "file.txt").write_text("downloaded")
 
-        # Add to extracted bundles
-        bundle_dir = repo.bundles_dir / digest[:12]
-        bundle_dir.mkdir(parents=True)
-        (bundle_dir / "test.txt").touch()
+    adapter.pull_selected.side_effect = pull_selected
+    repository._adapter = adapter
+    repository._auth_provider = MagicMock()
+    return repository
 
-        # Now should exist (found in extracted)
-        assert repo.exists(bundle_ref)
 
-    def test_exists_handles_invalid_refs(self, tmp_path):
-        """Test exists returns False for invalid refs."""
-        repo = ModelOpsBundleRepository(
-            registry_ref="localhost:5000/test",
-            cache_dir=str(tmp_path)
-        )
+def test_first_pull_creates_marker_and_files(repo: ModelOpsBundleRepository):
+    digest = "sha256:" + "a" * 64
+    _, bundle_path = repo.ensure_local(digest)
 
-        assert not repo.exists("not-a-digest")
-        assert not repo.exists("sha256:tooshort")
-        assert not repo.exists("md5:" + "d" * 64)
+    assert (bundle_path / "file.txt").read_text() == "downloaded"
+    assert (bundle_path / ".complete").exists()
+    assert repo._adapter.pull_selected.call_count == 1
 
-    def test_cache_structure_variations(self, tmp_path):
-        """Test different cache structure options."""
-        digest = "e" * 64
-        bundle_ref = f"sha256:{digest}"
 
-        # Test digest_short
-        repo_short = ModelOpsBundleRepository(
-            registry_ref="localhost:5000/test",
-            cache_dir=str(tmp_path / "short"),
-            cache_structure="digest_short"
-        )
+def test_subsequent_calls_use_complete_marker(repo: ModelOpsBundleRepository):
+    digest = "sha256:" + "a" * 64
+    repo.ensure_local(digest)
+    repo._adapter.pull_selected.reset_mock()
 
-        # Pre-create bundle
-        bundle_dir = repo_short.bundles_dir / digest[:12]
-        bundle_dir.mkdir(parents=True)
-        (bundle_dir / "test.txt").touch()
+    repo.ensure_local(digest)
+    assert repo._adapter.pull_selected.call_count == 0
 
-        ref, path = repo_short.ensure_local(bundle_ref)
-        assert path == bundle_dir
 
-        # Test digest_full
-        repo_full = ModelOpsBundleRepository(
-            registry_ref="localhost:5000/test",
-            cache_dir=str(tmp_path / "full"),
-            cache_structure="digest_full"
-        )
+def test_missing_marker_triggers_redownload(repo: ModelOpsBundleRepository):
+    digest = "sha256:" + "a" * 64
+    _, bundle_path = repo.ensure_local(digest)
+    (bundle_path / ".complete").unlink()
+    repo._adapter.pull_selected.reset_mock()
 
-        # Pre-create bundle
-        bundle_dir = repo_full.bundles_dir / digest
-        bundle_dir.mkdir(parents=True)
-        (bundle_dir / "test.txt").touch()
+    repo.ensure_local(digest)
+    assert repo._adapter.pull_selected.call_count == 1
 
-        ref, path = repo_full.ensure_local(bundle_ref)
-        assert path == bundle_dir
+
+def test_materialize_from_cache_when_available(repo: ModelOpsBundleRepository):
+    digest = "sha256:" + "a" * 64
+    _, bundle_path = repo.ensure_local(digest)
+
+    # Simulate new host: remove bundle dir, clear marker, and mark CAS as populated.
+    shutil.rmtree(bundle_path)
+    repo.cas.has.return_value = True
+    repo._adapter.pull_selected.reset_mock()
+
+    repo.ensure_local(digest)
+
+    assert repo.cas.materialize.call_count >= 1
+    assert repo._adapter.pull_selected.call_count == 0

@@ -4,16 +4,21 @@ This module provides the BundleRepository implementation that ModelOps
 workers use to fetch bundles from OCI registries.
 """
 
+import json
+import os
+import shutil
 from pathlib import Path
 from typing import Tuple, Optional
-import logging
 
+import logging
+import portalocker
+
+from .auth import get_auth_provider
 from .core import BundleConfig
 from .errors import NotFoundError
 from .local_cache import LocalCAS
 from .oras import OrasAdapter
-from .auth import get_auth_provider
-from .storage_models import StorageType
+from .storage_models import BundleIndex, StorageType
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +68,10 @@ class ModelOpsBundleRepository:
         # LocalCAS stores tarballs, we need extracted directories
         self.bundles_dir = self.cache_dir / "bundles"
         self.bundles_dir.mkdir(parents=True, exist_ok=True)
+        self.indexes_dir = self.cache_dir / "indexes"
+        self.indexes_dir.mkdir(parents=True, exist_ok=True)
+        self.locks_dir = self.cache_dir / "locks"
+        self.locks_dir.mkdir(parents=True, exist_ok=True)
 
         # Create minimal config for pulling operations
         self.config = BundleConfig(
@@ -83,12 +92,15 @@ class ModelOpsBundleRepository:
     def ensure_local(self, bundle_ref: str) -> Tuple[str, Path]:
         """Ensure bundle is available locally.
 
-        This is called by workers to get a bundle. It will:
-        1. Check if bundle is already extracted in bundles directory
-        2. If not, check if tarball is in CAS
-        3. If not in CAS, pull from registry into CAS
-        4. Extract from CAS to bundles directory
-        5. Return path to extracted bundle
+        This method must be resilient under concurrent access. Every digest
+        is protected by a filesystem lock and a `.complete` marker so:
+
+        1. Workers never reuse a directory that another process is still
+           downloading into.
+        2. Crash recovery is deterministic – partial directories are removed
+           and re-fetched before reuse.
+        3. When all files already exist in the LocalCAS, we rematerialize
+           directly from cache instead of re-downloading from ORAS.
 
         Args:
             bundle_ref: Bundle reference (sha256:64-hex-chars)
@@ -115,76 +127,37 @@ class ModelOpsBundleRepository:
         if len(digest) != 64:
             raise ValueError(f"Invalid digest length: expected 64 chars, got {len(digest)}")
 
-        # Determine extraction path based on cache structure
-        if self.cache_structure == "digest_short":
-            bundle_dir = self.bundles_dir / digest[:12]
-        elif self.cache_structure == "digest_full":
-            bundle_dir = self.bundles_dir / digest
-        else:
-            bundle_dir = self.bundles_dir / digest[:12]
+        bundle_dir = self._bundle_dir_for_digest(digest)
+        complete_marker = bundle_dir / ".complete"
+        lock_path = self.locks_dir / f"{digest}.lock"
 
-        # Check if already extracted
-        if bundle_dir.exists() and any(bundle_dir.iterdir()):
-            logger.debug(f"Bundle {digest[:12]} found extracted at {bundle_dir}")
-            return bundle_ref, bundle_dir
-
-        # Not in cache, need to pull from registry
         # Use repository-specific registry ref if repository was provided
         effective_registry = f"{self.registry_ref}/{repository}" if repository else self.registry_ref
-        logger.info(f"Pulling bundle {digest[:12]} from registry {effective_registry}")
 
-        try:
-            # Ensure we have auth and adapter initialized
-            if self._auth_provider is None:
-                self._auth_provider = get_auth_provider(self.registry_ref)
-            if self._adapter is None:
-                self._adapter = OrasAdapter(
-                    auth_provider=self._auth_provider,
-                    registry_ref=self.registry_ref,
-                    insecure=self.insecure
-                )
+        with portalocker.Lock(str(lock_path), "w", timeout=300):
+            if self._is_complete(bundle_dir, complete_marker):
+                return bundle_ref, bundle_dir
 
-            # Get the bundle index from the manifest
-            logger.debug(f"Getting index for sha256:{digest}")
-            index = self._adapter.get_index(effective_registry, f"sha256:{digest}")
-
-            # Get list of files to pull
-            entries = list(index.files.values())
-
-            # Check if we need blob storage (we don't for inline storage)
-            blob_store = None
-            if any(e.storage == StorageType.BLOB for e in entries):
-                # For workers, we don't expect BLOB storage, but handle gracefully
-                logger.warning("Bundle contains BLOB storage entries, may fail if blob store not configured")
-
-            # Ensure destination exists
+            if bundle_dir.exists():
+                shutil.rmtree(bundle_dir)
             bundle_dir.mkdir(parents=True, exist_ok=True)
 
-            # Pull all files directly to destination
-            # Use LocalCAS for caching if available
-            self._adapter.pull_selected(
-                registry_ref=effective_registry,
-                digest=f"sha256:{digest}",
-                entries=entries,
-                output_dir=bundle_dir,
-                blob_store=blob_store,
-                cas=self.cas,
-                link_mode="auto"
-            )
+            try:
+                index = self._load_cached_index(digest)
+                if index and self._can_materialize_from_cache(index):
+                    logger.debug("Materializing bundle %s from LocalCAS", digest[:12])
+                    self._materialize_from_cache(index, bundle_dir)
+                else:
+                    logger.info(f"Pulling bundle {digest[:12]} from registry {effective_registry}")
+                    index = self._pull_from_registry(effective_registry, digest, bundle_dir)
+                    self._save_index(digest, index)
 
-            if not bundle_dir.exists():
-                raise RuntimeError(f"Bundle pull succeeded but path doesn't exist: {bundle_dir}")
-
-            logger.info(f"Successfully pulled bundle {digest[:12]} to {bundle_dir}")
-            return bundle_ref, bundle_dir
-
-        except Exception as e:
-            # Clean up failed extraction
-            if bundle_dir.exists() and not any(bundle_dir.iterdir()):
-                bundle_dir.rmdir()
-
-            logger.error(f"Failed to pull bundle {digest[:12]}: {e}")
-            raise NotFoundError(f"Could not fetch bundle {bundle_ref}: {e}")
+                self._write_complete_marker(complete_marker)
+                return bundle_ref, bundle_dir
+            except Exception as e:
+                shutil.rmtree(bundle_dir, ignore_errors=True)
+                logger.error(f"Failed to pull bundle {digest[:12]}: {e}")
+                raise NotFoundError(f"Could not fetch bundle {bundle_ref}: {e}") from e
 
     def exists(self, bundle_ref: str) -> bool:
         """Check if bundle exists in repository.
@@ -225,6 +198,88 @@ class ModelOpsBundleRepository:
         # TODO: Implement actual registry check when needed
         logger.debug(f"Bundle {digest[:12]} not in local cache, assuming it might exist in registry")
         return False  # Conservative: only return True if we know for sure
+
+    def _bundle_dir_for_digest(self, digest: str) -> Path:
+        if self.cache_structure == "digest_short":
+            return self.bundles_dir / digest[:12]
+        if self.cache_structure == "digest_full":
+            return self.bundles_dir / digest
+        return self.bundles_dir / digest[:12]
+
+    def _is_complete(self, bundle_dir: Path, marker: Path) -> bool:
+        return bundle_dir.exists() and marker.exists()
+
+    def _write_complete_marker(self, marker: Path) -> None:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        tmp = marker.with_suffix(".tmp")
+        with open(tmp, "w") as f:
+            f.write("ok")
+        os.replace(tmp, marker)
+
+    def _load_cached_index(self, digest: str) -> BundleIndex | None:
+        index_path = self.indexes_dir / f"{digest}.json"
+        if not index_path.exists():
+            return None
+        try:
+            return BundleIndex.model_validate_json(index_path.read_text())
+        except Exception as exc:
+            logger.warning("Failed to load cached index for %s: %s", digest[:12], exc)
+            return None
+
+    def _save_index(self, digest: str, index: BundleIndex) -> None:
+        index_path = self.indexes_dir / f"{digest}.json"
+        tmp = index_path.with_suffix(".tmp")
+        tmp.write_text(index.to_json_deterministic())
+        os.replace(tmp, index_path)
+
+    def _can_materialize_from_cache(self, index: BundleIndex) -> bool:
+        for entry in index.files.values():
+            if entry.storage != StorageType.OCI:
+                return False
+            if not self.cas.has(entry.digest):
+                return False
+        return True
+
+    def _materialize_from_cache(self, index: BundleIndex, bundle_dir: Path) -> None:
+        for entry in index.files.values():
+            dest = bundle_dir / entry.path
+            self.cas.materialize(entry.digest, dest, mode="auto")
+
+    def _pull_from_registry(self, registry: str, digest: str, bundle_dir: Path) -> BundleIndex:
+        index = self._get_adapter().get_index(registry, f"sha256:{digest}")
+        entries = list(index.files.values())
+
+        blob_store = None
+        if any(e.storage == StorageType.BLOB for e in entries):
+            logger.warning(
+                "Bundle %s contains BLOB entries; ensure blob storage is configured",
+                digest[:12],
+            )
+
+        self._adapter.pull_selected(
+            registry_ref=registry,
+            digest=f"sha256:{digest}",
+            entries=entries,
+            output_dir=bundle_dir,
+            blob_store=blob_store,
+            cas=self.cas,
+            link_mode="auto",
+        )
+
+        if not bundle_dir.exists():
+            raise RuntimeError(f"Bundle pull succeeded but path doesn't exist: {bundle_dir}")
+        return index
+
+    def _get_adapter(self) -> OrasAdapter:
+        if self._auth_provider is None:
+            self._auth_provider = get_auth_provider(self.registry_ref)
+        if self._adapter is None:
+            self._adapter = OrasAdapter(
+                auth_provider=self._auth_provider,
+                registry_ref=self.registry_ref,
+                insecure=self.insecure,
+            )
+        return self._adapter
 
 
 # Export the repository class
