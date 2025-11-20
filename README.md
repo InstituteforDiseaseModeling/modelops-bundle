@@ -251,6 +251,18 @@ kubectl port-forward -n modelops-dask-dev svc/dask-scheduler 8786:8786 &
 This lets you monitor task progress, worker utilization, and debug any issues
 with your bundle execution in real-time.
 
+## Running Integration Tests Locally
+
+Some of the pytest suites (the ones marked `-m integration`) drive the CLI end-to-end against a live registry. You need the dev stack running first:
+
+```bash
+cd modelops-bundle
+make start   # starts registry + Azurite and seeds .modelops-bundle/envs/local.yaml
+uv run python -m pytest -m integration tests/test_e2e.py::test_full_workflow_with_cli_commands
+```
+
+`make start` is also safe to run on CI agents—the target no-ops if the stack is already up. When you are done debugging, `make stop` tears everything down.
+
 ## Lower-Level Bundle Operations
 
 For fine-grained control over bundle contents:
