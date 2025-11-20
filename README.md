@@ -370,4 +370,4 @@ MIT
 
 ## Documentation
 
-All bundle-specific design notes now live under [`docs/`](docs/). Start with [`docs/index.md`](docs/index.md) for the curated list of active guides (cache locking, provenance, ORAS) and the archived implementation plans.
+All bundle-specific design notes now live under [`docs/`](docs/). Start with [`docs/index.md`](docs/index.md) for the curated list of active guides (cache locking, provenance, ORAS) and the archived implementation plans. Auto code-discovery and bundle config options are documented in [`docs/auto_code.md`](docs/auto_code.md).

@@ -1,6 +1,7 @@
 # ModelOps Bundle Docs
 
 ## Active Notes
+- auto_code.md
 - cache_locking.md
 - developer_notes.md
 - oras.md

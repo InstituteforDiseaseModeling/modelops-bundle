@@ -33,6 +33,8 @@ from .working_state import TrackedWorkingState
 from .core import RemoteStatus, RemoteState
 from .errors import MissingIndexError, NetworkError, AuthError, NotFoundError, UnsupportedArtifactError, TagMovedError
 from .env_manager import load_env_for_command
+from .discovery import discover_local_imports
+from .config import load_bundle_config
 
 
 app = typer.Typer(help="""\
@@ -1675,6 +1677,13 @@ def dev_env():
 
 
 @app.command()
+def _module_path_from_file(file_path: Path) -> str:
+    module_path = str(file_path).replace("/", ".").replace("\\", ".")
+    if module_path.endswith(".py"):
+        module_path = module_path[:-3]
+    return module_path
+
+
 def register_model(
     model_path: Path = typer.Argument(..., help="Path to Python file containing model(s)"),
     classes: Optional[List[str]] = typer.Option(None, "--class", "-c", help="Specific class names to register (auto-discovers if not provided)"),
@@ -1683,7 +1692,9 @@ def register_model(
     code: List[Path] = typer.Option([], "--code", help="Code file dependencies"),
     outputs: List[str] = typer.Option([], "--output", "-o", help="Model output names"),
     model_id: Optional[str] = typer.Option(None, "--id", help="Model ID (only for single class registration)"),
-    confirm: bool = typer.Option(True, "--confirm/--no-confirm", help="Confirm auto-discovered classes")
+    auto_code: bool = typer.Option(True, "--auto-code/--no-auto-code", help="Automatically discover local code dependencies"),
+    code_mode: Optional[str] = typer.Option(None, "--code-mode", help="Override auto-code mode (package|files)"),
+    regen_all: bool = typer.Option(False, "--regen-all/--no-regen-all", help="Rescan all known model files"),
 ):
     """Register model(s) with their dependencies for provenance tracking.
 
@@ -1716,171 +1727,135 @@ def register_model(
             --exclude AbstractModel --exclude TestModel \\
             --data data/demographics.csv
     """
-    from modelops_contracts import BundleRegistry
-    import ast
+    from modelops_contracts import BundleRegistry, discover_model_classes
 
     ctx = require_project_context()
     registry_path = ctx.storage_dir / "registry.yaml"
+    registry = BundleRegistry.load(registry_path) if registry_path.exists() else BundleRegistry()
 
-    # Load existing registry or create new
-    if registry_path.exists():
-        registry = BundleRegistry.load(registry_path)
-    else:
-        registry = BundleRegistry()
+    file_set = (
+        sorted({m.path for m in registry.models.values()} | {model_path})
+        if regen_all
+        else [model_path]
+    )
 
-    # Validate model file exists
-    if not model_path.exists():
-        console.print(f"[red]Error: Model file not found: {model_path}[/red]")
-        raise typer.Exit(1)
+    total_added = total_updated = total_removed = 0
 
-    # Determine which classes to register
-    classes_to_register = []
+    for path in file_set:
+        if not path.exists():
+            removed_ids = [mid for mid, m in list(registry.models.items()) if m.path == path]
+            for mid in removed_ids:
+                registry.models.pop(mid, None)
+            if removed_ids:
+                console.print(f"[yellow]Removed {len(removed_ids)} model(s) from missing file: {path}[/yellow]")
+                total_removed += len(removed_ids)
+            continue
 
-    if not classes:
-        # Auto-discover classes
         try:
-            from modelops_contracts import discover_model_classes
-            discovered = discover_model_classes(model_path)
+            discovered = [name for name, _ in discover_model_classes(path)]
+        except Exception as exc:
+            console.print(f"[red]Error discovering classes in {path}: {exc}[/red]")
+            raise typer.Exit(1)
 
-            # Filter out excluded classes
+        if path == model_path:
             if exclude:
-                discovered = [(name, bases) for name, bases in discovered
-                             if name not in exclude]
+                discovered = [c for c in discovered if c not in exclude]
+            if classes:
+                discovered = [c for c in discovered if c in classes]
+            if model_id and len(discovered) > 1:
+                console.print("[red]Error: --id is only valid when a single class is registered[/red]")
+                raise typer.Exit(1)
+        if not discovered:
+            console.print(f"[yellow]No BaseModel subclasses found in {path}[/yellow]")
+            continue
 
-            if not discovered:
-                console.print("[yellow]No BaseModel subclasses found in file[/yellow]")
-                console.print("[dim]Ensure your models inherit from BaseModel (from calabaria or modelops_calabaria)[/dim]")
-                return
-
-            # Show what was discovered and confirm
-            console.print(f"[cyan]Discovered {len(discovered)} model class(es):[/cyan]")
-            for class_name, bases in discovered:
-                console.print(f"  • {class_name} (inherits: {', '.join(bases)})")
-
-            if confirm:
-                if not typer.confirm("\nRegister all discovered classes?"):
-                    console.print("[yellow]Registration cancelled[/yellow]")
-                    return
-
-            classes_to_register = [name for name, _ in discovered]
-
-        except Exception as e:
-            console.print(f"[red]Error discovering classes: {e}[/red]")
-            raise typer.Exit(1)
-    else:
-        # Use explicitly specified classes
-        classes_to_register = classes
-
-        # Validate that model_id is only used for single class
-        if model_id and len(classes_to_register) > 1:
-            console.print("[red]Error: --id can only be used when registering a single class[/red]")
-            raise typer.Exit(1)
-
-    # Validate imports in model file for dependency warnings
-    try:
-        with model_path.open() as f:
-            tree = ast.parse(f.read())
-
-        # Find imports
-        imports = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    imports.add(alias.name.split('.')[0])
-            elif isinstance(node, ast.ImportFrom):
-                if node.module and not node.module.startswith('.'):
-                    imports.add(node.module.split('.')[0])
-
-        # Check for local imports that might be missing
-        local_modules = []
-        for imp in imports:
-            # Try to find local module file
-            possible_paths = [
-                Path(f"src/{imp}.py"),
-                Path(f"src/{imp}/__init__.py"),
-                Path(f"{imp}.py"),
+        auto_code_paths: List[Path] = []
+        if auto_code:
+            roots_override = None
+            cfg = load_bundle_config(ctx.root)
+            if code_mode:
+                override_mode = code_mode
+            else:
+                override_mode = None
+            auto_code_paths = [
+                Path(p)
+                for p in discover_local_imports(
+                    path,
+                    ctx.root,
+                    override_mode=override_mode,
+                    override_roots=cfg.code_roots,
+                )
             ]
-            for path in possible_paths:
-                if path.exists() and path not in code and path != model_path:
-                    local_modules.append(path)
 
-        if local_modules:
-            console.print("[yellow]Warning: Detected imports that might be dependencies:[/yellow]")
-            for module in local_modules:
-                console.print(f"  • {module}")
-            console.print("[dim]Add with --code flag if these affect model behavior[/dim]")
+        chosen_code = sorted({Path(p) for p in code + auto_code_paths})
 
-    except Exception as e:
-        console.print(f"[yellow]Warning: Could not validate imports: {e}[/yellow]")
+        old_entries = {mid: m for mid, m in registry.models.items() if m.path == path}
+        new_entries = {}
 
-    # Register each class
-    registered_count = 0
-    for class_name in classes_to_register:
-        # Generate model ID
-        if len(classes_to_register) == 1 and model_id:
-            # Use provided ID for single class
-            reg_id = model_id
-        else:
-            # Auto-generate ID from file and class name
-            file_stem = model_path.stem.lower()
-            reg_id = f"{file_stem}_{class_name.lower()}"
+        module_path = _module_path_from_file(path)
 
-        # Auto-discover outputs if not explicitly provided
-        discovered_outputs = outputs if outputs else []
-        if not outputs:
-            try:
-                # Try to discover outputs using AST-based discovery
-                from modelops_calabaria.cli.discover import discover_models_in_file
-                models = discover_models_in_file(model_path)
-                for model in models:
-                    if model['class_name'] == class_name:
-                        # Extract output names from method names (remove 'extract_' prefix)
-                        for method_name in model['methods'].get('model_outputs', []):
-                            if method_name.startswith('extract_'):
-                                discovered_outputs.append(method_name[8:])  # Remove 'extract_' prefix
-                            else:
-                                discovered_outputs.append(method_name)
-                        break
-            except ImportError:
-                # Calabaria not available, outputs will be empty
-                pass
-            except Exception as e:
-                console.print(f"[yellow]Warning: Could not discover outputs: {e}[/yellow]")
+        for class_name in discovered:
+            reg_id = model_id if (path == model_path and model_id) else f"{path.stem.lower()}_{class_name.lower()}"
+            entrypoint = f"{module_path}:{class_name}"
 
-        # Add to registry
-        entry = registry.add_model(
-            model_id=reg_id,
-            path=model_path,
-            class_name=class_name,
-            data=data,
-            code=code,
-            outputs=discovered_outputs
+            discovered_outputs = outputs if outputs else []
+            if not outputs:
+                try:
+                    from modelops_calabaria.cli.discover import discover_models_in_file
+                    models = discover_models_in_file(path)
+                    for model in models:
+                        if model["class_name"] == class_name:
+                            for method_name in model["methods"].get("model_outputs", []):
+                                if method_name.startswith("extract_"):
+                                    discovered_outputs.append(method_name[8:])
+                                else:
+                                    discovered_outputs.append(method_name)
+                            break
+                except Exception:
+                    pass
+
+            entry = registry.add_model(
+                model_id=reg_id,
+                path=path,
+                class_name=class_name,
+                data=data,
+                code=chosen_code,
+                outputs=discovered_outputs,
+            )
+            entry.entrypoint = entrypoint
+            entry.compute_digest(base_path=ctx.root)
+            entry.compute_dependency_digests(base_path=ctx.root)
+            new_entries[reg_id] = entry
+
+        added_ids = sorted(set(new_entries) - set(old_entries))
+        updated_ids = sorted(
+            mid
+            for mid in (set(new_entries) & set(old_entries))
+            if new_entries[mid].model_digest != old_entries[mid].model_digest
         )
+        removed_ids = sorted(set(old_entries) - set(new_entries))
 
-        # Compute and store digests for the model and its dependencies
-        entry.compute_digest(base_path=ctx.root)
-        entry.compute_dependency_digests(base_path=ctx.root)
+        for mid in removed_ids:
+            registry.models.pop(mid, None)
+            total_removed += 1
 
-        registered_count += 1
-        console.print(f"✓ Registered {class_name} as '{reg_id}'")
-        if entry.model_digest:
-            console.print(f"  Model digest: {entry.model_digest[:16]}...")
+        for mid in added_ids + updated_ids:
+            registry.models[mid] = new_entries[mid]
 
-    # Save registry
+        for mid in added_ids:
+            console.print(f"[green]+[/green] {mid:20} entry={new_entries[mid].entrypoint}")
+            total_added += 1
+        for mid in updated_ids:
+            new_digest = (new_entries[mid].model_digest or "")[:12]
+            old_digest = (old_entries[mid].model_digest or "")[:12]
+            console.print(f"[yellow]~[/yellow] {mid:20} digest {old_digest} → {new_digest}")
+            total_updated += 1
+        for mid in removed_ids:
+            console.print(f"[red]-[/red] {mid:20} removed (no longer discovered)")
+
     registry.save(registry_path)
-
-    # Auto-track all registry dependencies
     track_registry_dependencies(ctx, registry)
-
-    # Summary
-    if registered_count > 0:
-        console.print(f"\n[green]Successfully registered {registered_count} model(s)[/green]")
-        if data:
-            console.print(f"  Data dependencies: {len(data)} files")
-        if code:
-            console.print(f"  Code dependencies: {len(code)} files")
-        if outputs:
-            console.print(f"  Outputs: {', '.join(outputs)}")
+    console.print(f"[green]✓[/green] Models updated: +{total_added} ~{total_updated} -{total_removed}")
 
 
 @app.command()
@@ -1888,7 +1863,7 @@ def register_target(
     target_path: Path = typer.Argument(..., help="Path to Python file containing target(s)"),
     targets: Optional[List[str]] = typer.Option(None, "--target", "-t", help="Specific target names to register (auto-discovers if not provided)"),
     exclude: Optional[List[str]] = typer.Option(None, "--exclude", "-e", help="Target names to exclude from auto-discovery"),
-    confirm: bool = typer.Option(True, "--confirm/--no-confirm", help="Confirm auto-discovered targets")
+    regen_all: bool = typer.Option(False, "--regen-all/--no-regen-all", help="Rescan all known target files"),
 ):
     """Register calibration target(s) for model evaluation.
 
@@ -1910,162 +1885,90 @@ def register_target(
     ctx = require_project_context()
     registry_path = ctx.storage_dir / "registry.yaml"
 
-    # Load existing registry or create new
-    if registry_path.exists():
-        registry = BundleRegistry.load(registry_path)
-    else:
-        registry = BundleRegistry()
+    registry = BundleRegistry.load(registry_path) if registry_path.exists() else BundleRegistry()
 
-    # Validate target file exists
+    file_set = (
+        sorted({t.path for t in registry.targets.values()} | {target_path})
+        if regen_all
+        else [target_path]
+    )
+
     if not target_path.exists():
         console.print(f"[red]Error: Target file not found: {target_path}[/red]")
         raise typer.Exit(1)
 
-    # Get all unique target files from existing registry for regeneration
-    existing_target_files = {target.path for target in registry.targets.values()}
+    total_added = total_updated = total_removed = 0
 
-    # Add the new target file to the set
-    all_target_files = existing_target_files | {target_path}
+    for path in file_set:
+        if not path.exists():
+            removed_ids = [tid for tid, t in list(registry.targets.items()) if t.path == path]
+            for tid in removed_ids:
+                registry.targets.pop(tid, None)
+            if removed_ids:
+                console.print(f"[yellow]Removed {len(removed_ids)} target(s) from missing file: {path}[/yellow]")
+                total_removed += len(removed_ids)
+            continue
 
-    # Store old target IDs for comparison
-    old_target_ids = set(registry.targets.keys())
-
-    # Clear all targets - we'll regenerate from all files
-    registry.targets = {}
-
-    # Show what we're regenerating from
-    if len(all_target_files) > 1:
-        console.print(f"[cyan]Regenerating targets from {len(all_target_files)} file(s):[/cyan]")
-        for file_path in sorted(all_target_files):
-            console.print(f"  • {file_path}")
-        console.print()
-
-    # Determine which targets to register from the current file
-    targets_to_register = []
-
-    if not targets:
-        # Auto-discover targets
-        try:
-            discovered = discover_target_functions(target_path)
-
-            # Filter out excluded targets
+        discovered = discover_target_functions(path)
+        if path == target_path:
             if exclude:
-                discovered = [(name, metadata) for name, metadata in discovered
-                             if name not in exclude]
+                discovered = [(n, m) for (n, m) in discovered if n not in exclude]
+            if targets:
+                include = set(targets)
+                discovered = [(n, m) for (n, m) in discovered if n in include]
+                missing = include - {n for n, _ in discovered}
+                if missing:
+                    console.print(f"[red]Error: Target(s) not found: {', '.join(sorted(missing))}[/red]")
+                    raise typer.Exit(1)
+        old_entries = {tid: t for tid, t in registry.targets.items() if t.path == path}
+        new_entries = {}
+        module_path = _module_path_from_file(path)
 
-            if not discovered:
-                console.print("[yellow]No @calibration_target decorated functions found in file[/yellow]")
-                console.print("[dim]Ensure your targets are decorated with @calibration_target[/dim]")
-                return
-
-            # Show what was discovered and confirm
-            console.print(f"[cyan]Discovered {len(discovered)} target(s):[/cyan]")
-            for target_name, metadata in discovered:
-                model_output = metadata.get('model_output', 'unknown')
-                data_files = metadata.get('data', {})
-                console.print(f"  • {target_name} (model_output: {model_output}, data: {len(data_files)} files)")
-
-            if confirm:
-                if not typer.confirm("\nRegister all discovered targets?"):
-                    console.print("[yellow]Registration cancelled[/yellow]")
-                    return
-
-            targets_to_register = discovered
-
-        except Exception as e:
-            console.print(f"[red]Error discovering targets: {e}[/red]")
-            raise typer.Exit(1)
-    else:
-        # Use explicitly specified targets
-        discovered = discover_target_functions(target_path)
-        targets_to_register = [(name, metadata) for name, metadata in discovered
-                               if name in targets]
-
-        if len(targets_to_register) != len(targets):
-            missing = set(targets) - set(name for name, _ in targets_to_register)
-            console.print(f"[red]Error: Target(s) not found: {', '.join(missing)}[/red]")
-            raise typer.Exit(1)
-
-    # Register targets from ALL files (including previously registered ones)
-    registered_count = 0
-    all_targets_by_file = {}
-
-    # First, process the current file with any filters applied
-    all_targets_by_file[target_path] = targets_to_register
-
-    # Then, process all other previously registered files
-    for file_path in all_target_files:
-        if file_path != target_path:
-            # Skip files that no longer exist
-            if not file_path.exists():
-                console.print(f"[yellow]Warning: Previously registered file no longer exists: {file_path}[/yellow]")
-                continue
-
-            try:
-                # Rediscover all targets from this file
-                discovered = discover_target_functions(file_path)
-                all_targets_by_file[file_path] = discovered
-            except Exception as e:
-                console.print(f"[yellow]Warning: Could not rediscover targets from {file_path}: {e}[/yellow]")
-                continue
-
-    # Now register all discovered targets
-    for file_path, file_targets in all_targets_by_file.items():
-        for target_name, metadata in file_targets:
-            # Extract metadata
-            model_output = metadata.get('model_output', target_name)
-            data_dict = metadata.get('data', {})
-
-            # Convert data dict to list of paths
-            data_files = []
-            for key, path_str in data_dict.items():
-                data_files.append(Path(path_str))
-
-            # Generate entrypoint
-            # Convert file path to module path
-            module_path = str(file_path).replace('/', '.').replace('\\', '.')
-            if module_path.endswith('.py'):
-                module_path = module_path[:-3]
-            entrypoint = f"{module_path}:{target_name}"
-
-            # Add to registry
+        for target_name, metadata in discovered:
+            model_output = metadata.get("model_output", target_name)
+            data_files = [Path(p) for p in (metadata.get("data") or {}).values()]
+            target_id = metadata.get("name", target_name)
             entry = registry.add_target(
-                target_id=metadata.get('name', target_name),
-                path=file_path,
-                entrypoint=entrypoint,
+                target_id=target_id,
+                path=path,
+                entrypoint=f"{module_path}:{target_name}",
                 model_output=model_output,
-                data=data_files
+                data=data_files,
+                labels=metadata.get("labels", {}),
+                weight=metadata.get("weight"),
             )
+            entry.compute_digest(base_path=ctx.root)
+            new_entries[target_id] = entry
 
-            registered_count += 1
-            console.print(f"✓ Registered {target_name} (from {file_path})")
-            console.print(f"  Model output: {model_output}")
-            if data_files:
-                console.print(f"  Data dependencies: {len(data_files)} files")
+        added_ids = sorted(set(new_entries) - set(old_entries))
+        updated_ids = sorted(
+            tid
+            for tid in (set(new_entries) & set(old_entries))
+            if new_entries[tid].target_digest != old_entries[tid].target_digest
+        )
+        removed_ids = sorted(set(old_entries) - set(new_entries))
 
-    # Save registry
+        for tid in removed_ids:
+            registry.targets.pop(tid, None)
+            total_removed += 1
+
+        for tid in added_ids + updated_ids:
+            registry.targets[tid] = new_entries[tid]
+
+        for tid in added_ids:
+            console.print(f"[green]+[/green] {tid:20} entry={new_entries[tid].entrypoint}")
+            total_added += 1
+        for tid in updated_ids:
+            new_digest = (new_entries[tid].target_digest or "")[:12]
+            old_digest = (old_entries[tid].target_digest or "")[:12]
+            console.print(f"[yellow]~[/yellow] {tid:20} digest {old_digest} → {new_digest}")
+            total_updated += 1
+        for tid in removed_ids:
+            console.print(f"[red]-[/red] {tid:20} removed (no longer discovered)")
+
     registry.save(registry_path)
-
-    # Warn about removed targets
-    new_target_ids = set(registry.targets.keys())
-    removed_target_ids = old_target_ids - new_target_ids
-    if removed_target_ids:
-        console.print(f"\n[yellow]Warning: {len(removed_target_ids)} target(s) were removed:[/yellow]")
-        for tid in sorted(removed_target_ids):
-            console.print(f"  • {tid}")
-        console.print("[dim]These targets were in the registry but are no longer found in their source files.[/dim]")
-
-    # Auto-track all registry dependencies
     track_registry_dependencies(ctx, registry)
-
-    # Summary
-    if registered_count > 0:
-        console.print(f"\n[green]Successfully registered {registered_count} target(s)[/green]")
-
-    # Show what was added vs what existed before
-    added_target_ids = new_target_ids - old_target_ids
-    if added_target_ids:
-        console.print(f"[green]Added {len(added_target_ids)} new target(s)[/green]")
+    console.print(f"[green]✓[/green] Targets updated: +{total_added} ~{total_updated} -{total_removed}")
 
 
 @app.command()
