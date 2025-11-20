@@ -39,7 +39,10 @@ def display_model_status(snapshot: ModelStatusSnapshot, console: Console, explai
         console.print("[dim]Cloud sync: Not pushed yet[/dim]")
 
     # Model table
-    table = Table(title=f"\nRegistered Models ({len(snapshot.models)})")
+    table = Table(
+        title=f"\nRegistered Models ({len(snapshot.models)})",
+        title_style="bold italic",
+    )
     table.add_column("Model", style="cyan")
     table.add_column("Local")  # Renamed from "Status" for clarity
     table.add_column("Dependencies")
@@ -304,7 +307,10 @@ def display_target_status(snapshot: ModelStatusSnapshot, console: Console):
     """
     from .target_state import TargetReadiness
 
-    table = Table(title=f"Registered Targets ({len(snapshot.targets)})")
+    table = Table(
+        title=f"Registered Targets ({len(snapshot.targets)})",
+        title_style="bold italic",
+    )
     table.add_column("Target", style="cyan")
     table.add_column("Model Output", style="dim")
     table.add_column("Status")
@@ -335,12 +341,12 @@ def display_target_status(snapshot: ModelStatusSnapshot, console: Console):
 
         # Cloud sync state (reuse model logic)
         cloud_text = {
-            ModelSyncState.SYNCED: "[green]Synced[/green]",
-            ModelSyncState.AHEAD: "[blue]Local ahead[/blue]",
-            ModelSyncState.BEHIND: "[yellow]Local behind[/yellow]",
-            ModelSyncState.DIVERGED: "[red]Diverged[/red]",
-            ModelSyncState.UNTRACKED: "[dim]Never pushed[/dim]",
-            ModelSyncState.UNKNOWN: "[dim]Unknown[/dim]",
+            ModelSyncState.SYNCED: "[green]✓ SYNCED[/green]",
+            ModelSyncState.AHEAD: "[blue]⚠ AHEAD[/blue]",
+            ModelSyncState.BEHIND: "[yellow]⚠ BEHIND[/yellow]",
+            ModelSyncState.DIVERGED: "[red]✗ DIVERGED[/red]",
+            ModelSyncState.UNTRACKED: "[dim]— NOT PUSHED[/dim]",
+            ModelSyncState.UNKNOWN: "[dim]? UNKNOWN[/dim]",
         }[target.cloud_sync_state]
 
         # Extract target name from entrypoint for display

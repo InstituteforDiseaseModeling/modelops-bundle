@@ -2000,8 +2000,8 @@ def list_registry(
     model_table = Table(
         show_header=True,
         header_style="bold white",
-        title="Registered Models",
-        title_style="italic",
+        title=f"Registered Models ({len(registry.models)})",
+        title_style="bold italic",
     )
     model_table.add_column("Model", style="cyan")
     model_table.add_column("Entrypoint", style="white")
@@ -2045,8 +2045,8 @@ def list_registry(
     target_table = Table(
         show_header=True,
         header_style="bold white",
-        title="Registered Targets",
-        title_style="italic",
+        title=f"Registered Targets ({len(registry.targets)})",
+        title_style="bold italic",
     )
     target_table.add_column("Target", style="cyan")
     target_table.add_column("Entrypoint", style="white")
