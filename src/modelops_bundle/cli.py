@@ -1971,6 +1971,71 @@ def register_target(
     console.print(f"[green]✓[/green] Targets updated: +{total_added} ~{total_updated} -{total_removed}")
 
 
+@app.command("list")
+def list_registry(
+    model_label: Optional[str] = typer.Option(None, "--model-label", help="Filter models by k=v"),
+    target_label: Optional[str] = typer.Option(None, "--target-label", help="Filter targets by k=v"),
+):
+    """List registered models and targets with optional label filters."""
+    from modelops_contracts import BundleRegistry
+
+    ctx = require_project_context()
+    registry_path = ctx.storage_dir / "registry.yaml"
+
+    if not registry_path.exists():
+        console.print("[yellow]No registry found. Use 'register-model' to start.[/yellow]")
+        raise typer.Exit(1)
+
+    registry = BundleRegistry.load(registry_path)
+
+    console.print("[bold]Models[/bold]")
+
+    def model_match(entry):
+        if not model_label:
+            return True
+        if "=" not in model_label:
+            return False
+        key, value = model_label.split("=", 1)
+        return entry.labels.get(key) == value
+
+    shown_models = False
+    for model_id, model in sorted(registry.models.items()):
+        if not model_match(model):
+            continue
+        shown_models = True
+        aliases = f" aliases={model.aliases}" if model.aliases else ""
+        console.print(f"  {model_id:20} entry={model.entrypoint} outputs={model.outputs} labels={model.labels}{aliases}")
+    if not shown_models:
+        console.print("  (no models)")
+
+    console.print("\n[bold]Targets[/bold]")
+    if registry.target_sets:
+        console.print("[dim]Target sets:[/dim]")
+        for name, ts in registry.target_sets.items():
+            weights = ", ".join(f"{k}:{v}" for k, v in ts.weights.items()) or "-"
+            console.print(f"  {name:12} -> {', '.join(ts.targets)} (weights: {weights})")
+        console.print()
+
+    def target_match(entry):
+        if not target_label:
+            return True
+        if "=" not in target_label:
+            return False
+        key, value = target_label.split("=", 1)
+        return entry.labels.get(key) == value
+
+    shown_targets = False
+    for target_id, target in sorted(registry.targets.items()):
+        if not target_match(target):
+            continue
+        shown_targets = True
+        console.print(
+            f"  {target_id:20} entry={target.entrypoint} output={target.model_output} labels={target.labels} weight={target.weight}"
+        )
+    if not shown_targets:
+        console.print("  (no targets)")
+
+
 @app.command()
 def show_registry():
     """Show registered models and targets.
