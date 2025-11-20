@@ -149,6 +149,45 @@ def test_init_creates_expected_structure(runner, isolated_home, test_env_file, t
         assert (project / "README.md").exists()
 
 
+def test_register_model_and_target_list_output(runner, isolated_home, test_env_file, tmp_path):
+    """Ensure register-model/target work non-interactively and list renders tables."""
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        result = runner.invoke(app, ["init", "--env", "local"])
+        assert result.exit_code == 0
+
+        Path("models").mkdir()
+        Path("targets").mkdir()
+        Path("data").mkdir()
+
+        Path("models/model.py").write_text(
+            "class Foo(BaseModel):\n"
+            "    pass\n"
+        )
+
+        Path("targets/foo.py").write_text(
+            "def calibration_target(**meta):\n"
+            "    def decorator(func):\n"
+            "        return func\n"
+            "    return decorator\n\n"
+            "@calibration_target(model_output='incidence', data={'obs': 'data/data.csv'})\n"
+            "def foo(data_paths):\n"
+            "    return None\n"
+        )
+
+        Path("data/data.csv").write_text("day,value\n1,2\n")
+
+        result = runner.invoke(app, ["register-model", "models/model.py"])
+        assert result.exit_code == 0, result.stdout or result.stderr
+
+        result = runner.invoke(app, ["register-target", "targets/foo.py"])
+        assert result.exit_code == 0, result.stdout or result.stderr
+
+        result = runner.invoke(app, ["list"])
+        assert result.exit_code == 0, result.stdout or result.stderr
+        assert "models.model:Foo" in result.stdout
+        assert "targets.foo:foo" in result.stdout
+
+
 # ========== One Real Subprocess E2E Test (marked slow) ==========
 
 @pytest.mark.slow

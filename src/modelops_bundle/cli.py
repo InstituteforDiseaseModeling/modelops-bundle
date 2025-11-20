@@ -1934,10 +1934,13 @@ def register_target(
                 entrypoint=f"{module_path}:{target_name}",
                 model_output=model_output,
                 data=data_files,
-                labels=metadata.get("labels", {}),
-                weight=metadata.get("weight"),
             )
-            entry.compute_digest(base_path=ctx.root)
+            if hasattr(entry, "labels") and metadata.get("labels"):
+                setattr(entry, "labels", metadata["labels"])
+            if hasattr(entry, "weight") and metadata.get("weight") is not None:
+                setattr(entry, "weight", metadata["weight"])
+            if hasattr(entry, "compute_digest"):
+                entry.compute_digest(base_path=ctx.root)
             new_entries[target_id] = entry
 
         added_ids = sorted(set(new_entries) - set(old_entries))
@@ -1971,6 +1974,12 @@ def register_target(
     console.print(f"[green]✓[/green] Targets updated: +{total_added} ~{total_updated} -{total_removed}")
 
 
+def _format_labels(labels_dict: dict | None) -> str:
+    if not labels_dict:
+        return "-"
+    return ", ".join(f"{k}={v}" for k, v in labels_dict.items())
+
+
 @app.command("list")
 def list_registry(
     model_label: Optional[str] = typer.Option(None, "--model-label", help="Filter models by k=v"),
@@ -1988,7 +1997,12 @@ def list_registry(
 
     registry = BundleRegistry.load(registry_path)
 
-    console.print("[bold]Models[/bold]")
+    model_table = Table(show_header=True, header_style="bold cyan")
+    model_table.add_column("Model ID", style="cyan")
+    model_table.add_column("Entrypoint")
+    model_table.add_column("Outputs")
+    model_table.add_column("Labels")
+    model_table.add_column("Aliases")
 
     def model_match(entry):
         if not model_label:
@@ -1996,30 +2010,44 @@ def list_registry(
         if "=" not in model_label:
             return False
         key, value = model_label.split("=", 1)
-        return entry.labels.get(key) == value
+        labels = getattr(entry, "labels", {})
+        return labels.get(key) == value
 
-    shown_models = False
+    model_rows = 0
     for model_id, model in sorted(registry.models.items()):
         if not model_match(model):
             continue
-        shown_models = True
-        aliases = getattr(model, "aliases", None) or []
-        labels = getattr(model, "labels", {})
-        aliases_str = f" aliases={aliases}" if aliases else ""
-        console.print(
-            f"  {model_id:20} entry={model.entrypoint} outputs={model.outputs} labels={labels}{aliases_str}"
-        )
-    if not shown_models:
+        outputs = ", ".join(getattr(model, "outputs", [])) or "-"
+        labels = _format_labels(getattr(model, "labels", {}))
+        aliases = ", ".join(getattr(model, "aliases", []) or []) or "-"
+        model_table.add_row(model_id, model.entrypoint, outputs, labels, aliases)
+        model_rows += 1
+
+    console.print("[bold]Models[/bold]")
+    if model_rows:
+        console.print(model_table)
+    else:
         console.print("  (no models)")
 
     console.print("\n[bold]Targets[/bold]")
     target_sets = getattr(registry, "target_sets", {})
     if target_sets:
-        console.print("[dim]Target sets:[/dim]")
+        ts_table = Table(show_header=True, header_style="bold magenta")
+        ts_table.add_column("Set")
+        ts_table.add_column("Targets")
+        ts_table.add_column("Weights")
         for name, ts in target_sets.items():
+            targets = ", ".join(getattr(ts, "targets", [])) or "-"
             weights = ", ".join(f"{k}:{v}" for k, v in getattr(ts, "weights", {}).items()) or "-"
-            console.print(f"  {name:12} -> {', '.join(getattr(ts, 'targets', []))} (weights: {weights})")
-        console.print()
+            ts_table.add_row(name, targets, weights)
+        console.print(ts_table)
+
+    target_table = Table(show_header=True, header_style="bold cyan")
+    target_table.add_column("Target ID", style="cyan")
+    target_table.add_column("Entrypoint")
+    target_table.add_column("Output")
+    target_table.add_column("Labels")
+    target_table.add_column("Weight")
 
     def target_match(entry):
         if not target_label:
@@ -2027,18 +2055,22 @@ def list_registry(
         if "=" not in target_label:
             return False
         key, value = target_label.split("=", 1)
-        return entry.labels.get(key) == value
+        labels = getattr(entry, "labels", {})
+        return labels.get(key) == value
 
-    shown_targets = False
+    target_rows = 0
     for target_id, target in sorted(registry.targets.items()):
         if not target_match(target):
             continue
-        shown_targets = True
-        labels = getattr(target, "labels", {})
-        console.print(
-            f"  {target_id:20} entry={target.entrypoint} output={target.model_output} labels={labels} weight={target.weight}"
-        )
-    if not shown_targets:
+        labels = _format_labels(getattr(target, "labels", {}))
+        weight = getattr(target, "weight", None)
+        weight_str = f"{weight}" if weight is not None else "-"
+        target_table.add_row(target_id, target.entrypoint, target.model_output, labels, weight_str)
+        target_rows += 1
+
+    if target_rows:
+        console.print(target_table)
+    else:
         console.print("  (no targets)")
 
 
