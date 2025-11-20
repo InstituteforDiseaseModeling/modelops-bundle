@@ -2001,7 +2001,7 @@ def list_registry(
         show_header=True,
         header_style="bold white",
         title="Registered Models",
-        title_style="bold",
+        title_style="italic",
     )
     model_table.add_column("Model", style="cyan")
     model_table.add_column("Entrypoint", style="white")
@@ -2046,7 +2046,7 @@ def list_registry(
         show_header=True,
         header_style="bold white",
         title="Registered Targets",
-        title_style="bold",
+        title_style="italic",
     )
     target_table.add_column("Target", style="cyan")
     target_table.add_column("Entrypoint", style="white")
