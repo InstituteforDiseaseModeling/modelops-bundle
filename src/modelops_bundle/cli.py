@@ -1997,12 +1997,12 @@ def list_registry(
 
     registry = BundleRegistry.load(registry_path)
 
-    model_table = Table(show_header=True, header_style="bold cyan")
-    model_table.add_column("Model ID", style="cyan")
-    model_table.add_column("Entrypoint")
-    model_table.add_column("Outputs")
-    model_table.add_column("Labels")
-    model_table.add_column("Aliases")
+    model_table = Table(show_header=True, header_style="bold white")
+    model_table.add_column("Model", style="cyan")
+    model_table.add_column("Entrypoint", style="white")
+    model_table.add_column("Outputs", style="white")
+    model_table.add_column("Labels", style="white")
+    model_table.add_column("Aliases", style="white")
 
     def model_match(entry):
         if not model_label:
@@ -2042,12 +2042,12 @@ def list_registry(
             ts_table.add_row(name, targets, weights)
         console.print(ts_table)
 
-    target_table = Table(show_header=True, header_style="bold cyan")
-    target_table.add_column("Target ID", style="cyan")
-    target_table.add_column("Entrypoint")
-    target_table.add_column("Output")
-    target_table.add_column("Labels")
-    target_table.add_column("Weight")
+    target_table = Table(show_header=True, header_style="bold white")
+    target_table.add_column("Target", style="cyan")
+    target_table.add_column("Entrypoint", style="white")
+    target_table.add_column("Model Output", style="white")
+    target_table.add_column("Labels", style="white")
+    target_table.add_column("Weight", style="white")
 
     def target_match(entry):
         if not target_label:
