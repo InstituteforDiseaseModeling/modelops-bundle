@@ -420,20 +420,25 @@ def test_full_workflow_with_cli_commands(sample_project, registry_ref, monkeypat
     # Use "." to init current directory
     result = run_cli("init", "--env", "local")
     assert result.returncode == 0
-    
+
+    # For CLI testing we copy the model to project root so entrypoints like
+    # "model:StochasticSIR" resolve to model.py (register-model strips src/)
+    root_model_path = sample_project / "model.py"
+    root_model_path.write_text((sample_project / "src" / "model.py").read_text())
+
     # Add files
-    result = run_cli("add", "src/model.py", "data/data.csv")
+    result = run_cli("add", "model.py", "data/data.csv")
     assert result.returncode == 0
-    
+
     # Check status
     result = run_cli("status")
     assert result.returncode == 0
-    assert "src/model.py" in result.stdout
+    assert "model.py" in result.stdout
 
     # Register at least one model so push has a registry to work with
     result = run_cli(
         "register-model",
-        "src/model.py",
+        "model.py",
         "--class",
         "StochasticSIR",
         "--no-confirm",
@@ -450,4 +455,3 @@ def test_full_workflow_with_cli_commands(sample_project, registry_ref, monkeypat
     result = run_cli("status")
     assert result.returncode == 0
     # Should show files as unchanged if remote is accessible
-
