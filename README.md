@@ -193,6 +193,14 @@ mops bundle register-target targets/incidence.py
 
 # Targets use Calabaria decorators but are tracked by bundle
 # for reproducibility
+
+# Group targets into reusable sets for calibration jobs
+mops bundle target-set set incidence \
+  --target incidence_per_replicate_target \
+  --target incidence_replicate_mean_target
+
+# Inspect available sets
+mops bundle target-set list
 ```
 
 ### Bundle Comparison

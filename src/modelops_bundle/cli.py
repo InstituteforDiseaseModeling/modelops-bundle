@@ -2,13 +2,17 @@
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple, TYPE_CHECKING
+from typing import Dict, List, Optional, Tuple
 
 import typer
 from rich.console import Console
 
-if TYPE_CHECKING:
-    from modelops_contracts import BundleRegistry
+from modelops_contracts import (
+    BundleRegistry,
+    discover_model_classes,
+    discover_model_outputs,
+    discover_target_functions,
+)
 from rich.table import Table
 from .context import ProjectContext
 from .core import (
@@ -37,12 +41,24 @@ from .discovery import discover_local_imports
 from .config import load_bundle_config
 
 
-app = typer.Typer(help="""\
+app = typer.Typer(
+    help="""\
 Model bundle (model code and data) synchronization between workstation
 and cloud, for cloud-based execution. Track files, push to registry, 
-pull cloud version to local workstation.""")
+pull cloud version to local workstation.""",
+    invoke_without_command=True,
+)
 
 console = Console()
+
+
+@app.callback(invoke_without_command=True)
+def _root(ctx: typer.Context):
+    """Show help when invoked without a subcommand."""
+    if ctx.invoked_subcommand is None:
+        console.print(ctx.get_help())
+        console.print("\n[red]Error:[/red] Missing command.")
+        raise typer.Exit(1)
 
 
 def _is_cloud_registry(host: str) -> bool:
@@ -846,9 +862,17 @@ def status(
                     storage = format_storage_display(storage_type, config=config)
             
             # Build row data
+            change_text = status_map.get(change_type, str(change_type))
+            if change_type == ChangeType.ADDED_REMOTE:
+                local_path = ctx.root / path
+                if local_path.exists():
+                    change_text = "[yellow]?[/yellow] untracked locally (tracked in remote)"
+                else:
+                    change_text = "[blue]↓[/blue] remote only (missing locally)"
+
             row_data = [
                 path,
-                status_map.get(change_type, str(change_type)),
+                change_text,
                 humanize_size(file_info.size) if file_info else "-"
             ]
             if config.storage and (config.storage.uses_blob_storage or config.storage.mode != "auto"):
@@ -1583,6 +1607,8 @@ def _apply_smart_filtering(all_manifests: List[dict], limit: int) -> List[dict]:
 # Developer subcommand
 dev_app = typer.Typer(help="Developer tools for managing environments")
 app.add_typer(dev_app, name="dev")
+target_set_app = typer.Typer(help="Manage named target sets for calibration")
+app.add_typer(target_set_app, name="target-set")
 
 
 @dev_app.command(name="switch")
@@ -1690,7 +1716,6 @@ def register_model(
     exclude: Optional[List[str]] = typer.Option(None, "--exclude", "-e", help="Class names to exclude from auto-discovery"),
     data: List[Path] = typer.Option([], "--data", "-d", help="Data file dependencies"),
     code: List[Path] = typer.Option([], "--code", help="Code file dependencies"),
-    outputs: List[str] = typer.Option([], "--output", "-o", help="Model output names"),
     model_id: Optional[str] = typer.Option(None, "--id", help="Model ID (only for single class registration)"),
     auto_code: bool = typer.Option(True, "--auto-code/--no-auto-code", help="Automatically discover local code dependencies"),
     code_mode: Optional[str] = typer.Option(None, "--code-mode", help="Override auto-code mode (package|files)"),
@@ -1727,8 +1752,6 @@ def register_model(
             --exclude AbstractModel --exclude TestModel \\
             --data data/demographics.csv
     """
-    from modelops_contracts import BundleRegistry, discover_model_classes
-
     ctx = require_project_context()
     registry_path = ctx.storage_dir / "registry.yaml"
     registry = BundleRegistry.load(registry_path) if registry_path.exists() else BundleRegistry()
@@ -1793,26 +1816,15 @@ def register_model(
         new_entries = {}
 
         module_path = _module_path_from_file(path)
+        outputs_by_class = {}
+        try:
+            outputs_by_class = discover_model_outputs(path)
+        except Exception:
+            outputs_by_class = {}
 
         for class_name in discovered:
             reg_id = model_id if (path == model_path and model_id) else f"{path.stem.lower()}_{class_name.lower()}"
             entrypoint = f"{module_path}:{class_name}"
-
-            discovered_outputs = outputs if outputs else []
-            if not outputs:
-                try:
-                    from modelops_calabaria.cli.discover import discover_models_in_file
-                    models = discover_models_in_file(path)
-                    for model in models:
-                        if model["class_name"] == class_name:
-                            for method_name in model["methods"].get("model_outputs", []):
-                                if method_name.startswith("extract_"):
-                                    discovered_outputs.append(method_name[8:])
-                                else:
-                                    discovered_outputs.append(method_name)
-                            break
-                except Exception:
-                    pass
 
             entry = registry.add_model(
                 model_id=reg_id,
@@ -1820,7 +1832,7 @@ def register_model(
                 class_name=class_name,
                 data=data,
                 code=chosen_code,
-                outputs=discovered_outputs,
+                outputs=outputs_by_class.get(class_name, []),
             )
             entry.entrypoint = entrypoint
             entry.compute_digest(base_path=ctx.root)
@@ -1904,6 +1916,8 @@ def register_target(
             removed_ids = [tid for tid, t in list(registry.targets.items()) if t.path == path]
             for tid in removed_ids:
                 registry.targets.pop(tid, None)
+                if hasattr(registry, "remove_target_from_sets"):
+                    registry.remove_target_from_sets(tid)
             if removed_ids:
                 console.print(f"[yellow]Removed {len(removed_ids)} target(s) from missing file: {path}[/yellow]")
                 total_removed += len(removed_ids)
@@ -1953,6 +1967,8 @@ def register_target(
 
         for tid in removed_ids:
             registry.targets.pop(tid, None)
+            if hasattr(registry, "remove_target_from_sets"):
+                registry.remove_target_from_sets(tid)
             total_removed += 1
 
         for tid in added_ids + updated_ids:
@@ -1980,6 +1996,118 @@ def _format_labels(labels_dict: dict | None) -> str:
     return ", ".join(f"{k}={v}" for k, v in labels_dict.items())
 
 
+def _parse_assignments(values: Optional[List[str]]) -> Dict[str, float]:
+    """Parse key=value assignments from CLI options."""
+    result: Dict[str, float] = {}
+    if not values:
+        return result
+    for raw in values:
+        if "=" not in raw:
+            console.print(f"[yellow]Ignoring malformed weight '{raw}' (expected id=value)[/yellow]")
+            continue
+        key, value = raw.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            console.print(f"[yellow]Ignoring weight with empty id: '{raw}'[/yellow]")
+            continue
+        try:
+            result[key] = float(value)
+        except ValueError:
+            console.print(f"[yellow]Ignoring weight '{raw}' (value must be numeric)[/yellow]")
+    return result
+
+
+@target_set_app.command("list")
+def list_target_sets():
+    """List target sets defined in the registry."""
+    from modelops_contracts import BundleRegistry
+
+    ctx = require_project_context()
+    registry_path = ctx.storage_dir / "registry.yaml"
+    if not registry_path.exists():
+        console.print("[yellow]No registry found. Register targets first.[/yellow]")
+        raise typer.Exit(1)
+
+    registry = BundleRegistry.load(registry_path)
+    if not registry.target_sets:
+        console.print("No target sets defined. Use 'target-set set <name>' to create one.")
+        raise typer.Exit(0)
+
+    table = Table(show_header=True, header_style="bold white", title="Target Sets")
+    table.add_column("Name", style="cyan")
+    table.add_column("Targets")
+    table.add_column("Weights")
+    for name, target_set in sorted(registry.target_sets.items()):
+        targets = ", ".join(target_set.targets) or "-"
+        weights = ", ".join(f"{k}={v:g}" for k, v in target_set.weights.items()) or "-"
+        table.add_row(name, targets, weights)
+    console.print(table)
+
+
+@target_set_app.command("set")
+def define_target_set(
+    name: str = typer.Argument(..., help="Name of the target set"),
+    target: Optional[List[str]] = typer.Option(
+        None,
+        "--target",
+        "-t",
+        help="Target id to include (repeat to add multiple). Defaults to all registered targets.",
+    ),
+    weight: Optional[List[str]] = typer.Option(
+        None,
+        "--weight",
+        "-w",
+        help="Optional target weight in id=value format (repeatable).",
+    ),
+):
+    """Create or update a target set."""
+    from modelops_contracts import BundleRegistry
+
+    ctx = require_project_context()
+    registry_path = ctx.storage_dir / "registry.yaml"
+    if not registry_path.exists():
+        console.print("[red]Registry not found. Register models/targets first.[/red]")
+        raise typer.Exit(1)
+
+    registry = BundleRegistry.load(registry_path)
+    target_ids = list(dict.fromkeys(target or registry.targets.keys()))
+    if not target_ids:
+        console.print("[red]No targets available to include in set.[/red]")
+        raise typer.Exit(1)
+
+    weights = _parse_assignments(weight)
+    try:
+        registry.set_target_set(name, target_ids, weights)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
+    registry.save(registry_path)
+    track_registry_dependencies(ctx, registry)
+    console.print(f"[green]✓[/green] Target set '{name}' now includes: {', '.join(target_ids)}")
+
+
+@target_set_app.command("delete")
+def delete_target_set(name: str = typer.Argument(..., help="Name of the target set to delete")):
+    """Delete a target set."""
+    from modelops_contracts import BundleRegistry
+
+    ctx = require_project_context()
+    registry_path = ctx.storage_dir / "registry.yaml"
+    if not registry_path.exists():
+        console.print("[yellow]No registry found.[/yellow]")
+        raise typer.Exit(1)
+
+    registry = BundleRegistry.load(registry_path)
+    if registry.delete_target_set(name):
+        registry.save(registry_path)
+        track_registry_dependencies(ctx, registry)
+        console.print(f"[green]✓[/green] Deleted target set '{name}'")
+    else:
+        console.print(f"[yellow]Target set '{name}' not found[/yellow]")
+
+
 @app.command("list")
 def list_registry(
     model_label: Optional[str] = typer.Option(None, "--model-label", help="Filter models by k=v"),
@@ -2000,8 +2128,8 @@ def list_registry(
     model_table = Table(
         show_header=True,
         header_style="bold white",
-        title="Registered Models",
-        title_style="italic",
+        title=f"Registered Models ({len(registry.models)})",
+        title_style="bold italic",
     )
     model_table.add_column("Model", style="cyan")
     model_table.add_column("Entrypoint", style="white")
@@ -2045,8 +2173,8 @@ def list_registry(
     target_table = Table(
         show_header=True,
         header_style="bold white",
-        title="Registered Targets",
-        title_style="italic",
+        title=f"Registered Targets ({len(registry.targets)})",
+        title_style="bold italic",
     )
     target_table.add_column("Target", style="cyan")
     target_table.add_column("Entrypoint", style="white")
@@ -2074,76 +2202,6 @@ def list_registry(
         target_rows += 1
 
     console.print(target_table if target_rows else "  (no targets)")
-
-
-@app.command()
-def show_registry():
-    """Show registered models and targets.
-
-    Displays the complete registry with all dependencies and digests.
-
-    Example:
-        mops-bundle show-registry
-    """
-    from modelops_contracts import BundleRegistry
-
-    ctx = require_project_context()
-    registry_path = ctx.storage_dir / "registry.yaml"
-
-    if not registry_path.exists():
-        console.print("[yellow]No registry found. Use 'register-model' to start.[/yellow]")
-        return
-
-    registry = BundleRegistry.load(registry_path)
-
-    # Validate
-    errors = registry.validate()
-    if errors:
-        console.print("[red]Registry has validation errors:[/red]")
-        for error in errors:
-            console.print(f"  • {error}")
-        console.print()
-
-    # Show models
-    if registry.models:
-        console.print("[bold]Registered Models:[/bold]")
-        for model_id, model in registry.models.items():
-            console.print(f"\n  [cyan]{model_id}[/cyan]")
-            console.print(f"    Class: {model.class_name}")
-            console.print(f"    File: {model.path}")
-            if model.outputs:
-                console.print(f"    Outputs: {', '.join(model.outputs)}")
-            if model.data:
-                console.print(f"    Data deps: {len(model.data)} files")
-                for data_file in model.data[:3]:  # Show first 3
-                    console.print(f"      • {data_file}")
-                if len(model.data) > 3:
-                    console.print(f"      ... and {len(model.data) - 3} more")
-            if model.code:
-                console.print(f"    Code deps: {len(model.code)} files")
-            if model.model_digest:
-                console.print(f"    Digest: {model.model_digest[:12]}...")
-    else:
-        console.print("[dim]No models registered[/dim]")
-
-    # Show targets
-    if registry.targets:
-        console.print("\n[bold]Registered Targets:[/bold]")
-        for target_id, target in registry.targets.items():
-            console.print(f"\n  [cyan]{target_id}[/cyan]")
-            console.print(f"    File: {target.path}")
-            console.print(f"    Output: {target.model_output}")
-            if target.data:
-                console.print(f"    Data dependencies: {len(target.data)} file(s)")
-                for data_file in target.data[:3]:
-                    console.print(f"      • {data_file}")
-                if len(target.data) > 3:
-                    console.print(f"      ... and {len(target.data) - 3} more")
-            if target.target_digest:
-                console.print(f"    Digest: {target.target_digest[:12]}...")
-    else:
-        console.print("\n[dim]No targets registered[/dim]")
-
 
 def main():
     """Entry point for CLI."""

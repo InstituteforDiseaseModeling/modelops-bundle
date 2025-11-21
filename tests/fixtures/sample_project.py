@@ -321,9 +321,7 @@ These models are designed to work with modelops-bundle's model registry:
 # Auto-discover and register all BaseModel subclasses
 mops-bundle register-model src/model.py \\
   --data data/data.csv \\
-  --data config.yaml \\
-  --output prevalence \\
-  --output incidence
+  --data config.yaml
 
 # Or register specific models only
 mops-bundle register-model src/model.py \\
