@@ -18,7 +18,7 @@ def create_minimal_pyproject(tmp_path: Path) -> Path:
     pyproject.write_text("""[project]
 name = "test-bundle"
 version = "0.1.0"
-dependencies = []
+dependencies = ["modelops-calabaria"]
 
 [build-system]
 requires = ["hatchling"]

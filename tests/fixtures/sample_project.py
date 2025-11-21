@@ -277,6 +277,16 @@ matplotlib>=3.5.0
 scipy>=1.7.0
 modelops-calabaria>=0.1.0'''
 
+PYPROJECT_TOML = '''[project]
+name = "test-bundle"
+version = "0.1.0"
+dependencies = ["modelops-calabaria"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+'''
+
 README_MD = '''# Sample Epidemiological Models
 
 SIR (Susceptible-Infected-Recovered) epidemiological models using modelops-calabaria.
@@ -357,7 +367,8 @@ def create_sample_project(root: Path, name: str = "epi_model") -> Path:
     (project_dir / "config.yaml").write_text(CONFIG_YAML)
     (project_dir / "requirements.txt").write_text(REQUIREMENTS_TXT)
     (project_dir / "README.md").write_text(README_MD)
-    
+    (project_dir / "pyproject.toml").write_text(PYPROJECT_TOML)
+
     return project_dir
 
 

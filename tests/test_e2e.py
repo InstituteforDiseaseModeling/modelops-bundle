@@ -427,7 +427,7 @@ def test_full_workflow_with_cli_commands(sample_project, registry_ref, monkeypat
     root_model_path.write_text((sample_project / "src" / "model.py").read_text())
 
     # Add files
-    result = run_cli("add", "model.py", "data/data.csv")
+    result = run_cli("add", "model.py", "data/data.csv", "pyproject.toml")
     assert result.returncode == 0
 
     # Check status
