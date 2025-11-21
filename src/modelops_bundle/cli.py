@@ -10,9 +10,13 @@ from rich.console import Console
 from modelops_contracts import (
     BundleRegistry,
     discover_model_classes,
-    discover_model_outputs,
     discover_target_functions,
 )
+try:
+    from modelops_contracts import discover_model_outputs
+except ImportError:  # older released build without auto-output helper
+    def discover_model_outputs(path: Path) -> Dict[str, List[str]]:
+        return {}
 from rich.table import Table
 from .context import ProjectContext
 from .core import (
