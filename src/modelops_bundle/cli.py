@@ -321,8 +321,11 @@ def _resolve_target_dir(path: Optional[str]) -> Tuple[Path, str, bool]:
     """
     if path:
         target_dir = Path(path).resolve()
-        # Only create templates if we're creating a NEW directory
-        should_create_templates = not target_dir.exists()
+        # Create templates if directory doesn't exist OR pyproject.toml doesn't exist
+        if not target_dir.exists():
+            should_create_templates = True  # New directory
+        else:
+            should_create_templates = not (target_dir / "pyproject.toml").exists()
         return target_dir, target_dir.name, should_create_templates
     else:
         # Using current directory - create templates if pyproject.toml doesn't exist
