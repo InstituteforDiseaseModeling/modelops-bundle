@@ -15,6 +15,28 @@ from modelops_contracts import BundleRegistry, ModelEntry, TargetEntry
 from datetime import datetime
 
 
+def create_minimal_pyproject(tmp_path: Path) -> Path:
+    """Create minimal pyproject.toml for tests.
+
+    Args:
+        tmp_path: Directory to create pyproject.toml in
+
+    Returns:
+        Path to created pyproject.toml
+    """
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text("""[project]
+name = "test-bundle"
+version = "0.1.0"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+""")
+    return pyproject
+
+
 class TestPreflightCLIIntegration:
     """Test preflight validation in the context of CLI commands."""
 
@@ -87,9 +109,11 @@ class TestPreflightCLIIntegration:
         (models_dir / "__init__.py").write_text("")
         (models_dir / "test.py").write_text("class TestModel: pass")
 
-        # Track the file
+        # Create pyproject.toml and track files
+        create_minimal_pyproject(tmp_path)
         tracked = TrackedFiles()
         tracked.add(Path("models/test.py"))
+        tracked.add(Path("pyproject.toml"))
         save_tracked(tracked, ctx)
 
         # Create registry with empty outputs warning
@@ -142,10 +166,12 @@ class TestPreflightCLIIntegration:
         (targets_dir / "__init__.py").write_text("")
         (targets_dir / "test.py").write_text("def target_fn(): pass")
 
-        # Track files
+        # Create pyproject.toml and track files
+        create_minimal_pyproject(tmp_path)
         tracked = TrackedFiles()
         tracked.add(Path("models/test.py"))
         tracked.add(Path("targets/test.py"))
+        tracked.add(Path("pyproject.toml"))
         save_tracked(tracked, ctx)
 
         # Create registry with unused outputs
@@ -207,10 +233,12 @@ class TestPreflightCLIIntegration:
         (targets_dir / "__init__.py").write_text("")
         (targets_dir / "test.py").write_text("def target_fn(): pass")
 
-        # Track files
+        # Create pyproject.toml and track files
+        create_minimal_pyproject(tmp_path)
         tracked = TrackedFiles()
         tracked.add(Path("models/test.py"))
         tracked.add(Path("targets/test.py"))
+        tracked.add(Path("pyproject.toml"))
         save_tracked(tracked, ctx)
 
         # Create valid registry

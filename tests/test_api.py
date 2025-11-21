@@ -12,6 +12,21 @@ from modelops_bundle.core import TrackedFiles, SyncState
 from modelops_bundle.ops import save_config, save_tracked, save_state, BundleConfig
 
 
+def create_minimal_pyproject(tmp_path: Path) -> Path:
+    """Create minimal pyproject.toml for tests."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text("""[project]
+name = "test-bundle"
+version = "0.1.0"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+""")
+    return pyproject
+
+
 def test_api_module_importable():
     """Test that the api module can be imported.
 
@@ -67,12 +82,14 @@ def test_push_dir_basic_flow(tmp_path, monkeypatch):
     registry_path = ctx.storage_dir / "registry.yaml"
     registry.save(registry_path)
 
-    # Create some tracked files
+    # Create pyproject.toml and track files
+    create_minimal_pyproject(tmp_path)
     test_file = tmp_path / "model.py"
     test_file.write_text("# test model")
 
     tracked = TrackedFiles()
     tracked.add(Path("model.py"))
+    tracked.add(Path("pyproject.toml"))
     save_tracked(tracked, ctx)
 
     # Create empty sync state
@@ -115,7 +132,11 @@ def test_push_dir_with_custom_tag(tmp_path, monkeypatch):
     registry_path = ctx.storage_dir / "registry.yaml"
     registry.save(registry_path)
 
-    save_tracked(TrackedFiles(), ctx)
+    # Create pyproject.toml and track it
+    create_minimal_pyproject(tmp_path)
+    tracked = TrackedFiles()
+    tracked.add(Path("pyproject.toml"))
+    save_tracked(tracked, ctx)
     save_state(SyncState(), ctx)
 
     from modelops_bundle import api
