@@ -325,9 +325,10 @@ def _resolve_target_dir(path: Optional[str]) -> Tuple[Path, str, bool]:
         should_create_templates = not target_dir.exists()
         return target_dir, target_dir.name, should_create_templates
     else:
-        # Using current directory
+        # Using current directory - create templates if pyproject.toml doesn't exist
         target_dir = Path.cwd()
-        return target_dir, target_dir.name, False
+        should_create_templates = not (target_dir / "pyproject.toml").exists()
+        return target_dir, target_dir.name, should_create_templates
 
 
 def _check_already_initialized(target_dir: Path) -> None:
