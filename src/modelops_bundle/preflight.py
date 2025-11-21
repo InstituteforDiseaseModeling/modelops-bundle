@@ -93,7 +93,7 @@ class PreflightValidator:
         issues.extend(self._check_empty_outputs())
         issues.extend(self._check_untracked_files())
         issues.extend(self._check_package_structure())
-        issues.extend(self._check_pyproject_tracked())
+        issues.extend(self._check_pyproject_manifest())
 
         # Info checks
         issues.extend(self._check_unused_outputs())
@@ -465,34 +465,75 @@ class PreflightValidator:
 
         return issues
 
-    def _check_pyproject_tracked(self) -> List[ValidationIssue]:
-        """Check if pyproject.toml exists but is not tracked.
-
-        This is critical because workers need pyproject.toml to install
-        bundle dependencies. Without it, all imports will fail.
-
-        Returns:
-            List of validation issues
-        """
+    def _check_pyproject_manifest(self) -> List[ValidationIssue]:
+        """Ensure pyproject.toml exists, is tracked, and declares required metadata."""
         from .ops import load_tracked
+        import tomllib
 
-        issues = []
-        pyproject_path = self.ctx.root / "pyproject.toml"
+        issues: List[ValidationIssue] = []
+        manifest_path = self.ctx.root / "pyproject.toml"
 
-        if pyproject_path.exists():
-            tracked = load_tracked(self.ctx)
-            tracked_set = set(tracked.files)
-            rel_path = "pyproject.toml"
+        if not manifest_path.exists():
+            issues.append(ValidationIssue(
+                severity=CheckSeverity.ERROR,
+                category="missing_dependency_file",
+                entity_type="bundle",
+                entity_id=None,
+                message="pyproject.toml is required so workers can install bundle dependencies",
+                suggestion="Create pyproject.toml at the project root with your dependencies"
+            ))
+            return issues
 
-            if rel_path not in tracked_set:
-                issues.append(ValidationIssue(
-                    severity=CheckSeverity.ERROR,
-                    category="missing_dependency_file",
-                    entity_type="bundle",
-                    entity_id=None,
-                    message="pyproject.toml exists but is not tracked",
-                    suggestion="Run 'mops-bundle add pyproject.toml' to track dependencies"
-                ))
+        tracked = load_tracked(self.ctx)
+        if "pyproject.toml" not in set(tracked.files):
+            issues.append(ValidationIssue(
+                severity=CheckSeverity.ERROR,
+                category="missing_dependency_file",
+                entity_type="bundle",
+                entity_id=None,
+                message="pyproject.toml exists but is not tracked",
+                suggestion="Run 'mops-bundle add pyproject.toml' to track dependency metadata"
+            ))
+
+        try:
+            data = tomllib.loads(manifest_path.read_text())
+        except Exception as exc:
+            issues.append(ValidationIssue(
+                severity=CheckSeverity.ERROR,
+                category="invalid_pyproject",
+                entity_type="bundle",
+                entity_id=None,
+                message=f"Failed to parse pyproject.toml: {exc}",
+                suggestion="Fix pyproject.toml so it is valid TOML"
+            ))
+            return issues
+
+        project = data.get("project") or {}
+        dependencies = project.get("dependencies") or []
+        entrypoints = project.get("entry-points") or data.get("project.entry-points") or {}
+
+        # Check if wire function will be discoverable at runtime
+        # Wire can come from multiple sources (checked in priority order by workers):
+        # 1. Entry point in bundle's own pyproject.toml
+        # 2. Entry point from dependency (e.g., modelops-calabaria)
+        # 3. .modelops/manifest.json with {"wire": "module:func"}
+        # 4. .modelops/modelops.toml
+        # 5. Conventional wire.py file at bundle root
+
+        has_own_wire = "modelops.wire" in entrypoints
+        has_calabaria = any("modelops-calabaria" in dep for dep in dependencies)
+        has_manifest = (self.ctx.root / ".modelops" / "manifest.json").exists()
+        has_wire_py = (self.ctx.root / "wire.py").exists()
+
+        if not (has_own_wire or has_calabaria or has_manifest or has_wire_py):
+            issues.append(ValidationIssue(
+                severity=CheckSeverity.ERROR,
+                category="missing_wire",
+                entity_type="bundle",
+                entity_id=None,
+                message="No wire function discoverable: need modelops-calabaria dependency, entry point, .modelops/manifest.json, or wire.py",
+                suggestion="Add 'modelops-calabaria' to dependencies OR create wire.py OR add .modelops/manifest.json with wire specification"
+            ))
 
         return issues
 
