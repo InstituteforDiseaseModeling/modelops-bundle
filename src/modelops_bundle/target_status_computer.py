@@ -1,6 +1,6 @@
 """Compute target status from registry, local files, and cloud state."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -162,7 +162,7 @@ class TargetStatusComputer:
         if abs_path.exists():
             stat = abs_path.stat()
             size = stat.st_size
-            mtime = datetime.fromtimestamp(stat.st_mtime)
+            mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
 
         # Determine state
         if actual is None:
