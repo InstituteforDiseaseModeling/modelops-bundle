@@ -112,6 +112,7 @@ class TestPreflightCLIIntegration:
         # Create pyproject.toml and track files
         create_minimal_pyproject(tmp_path)
         tracked = TrackedFiles()
+        tracked.add(Path("models/__init__.py"))
         tracked.add(Path("models/test.py"))
         tracked.add(Path("pyproject.toml"))
         save_tracked(tracked, ctx)
@@ -169,7 +170,9 @@ class TestPreflightCLIIntegration:
         # Create pyproject.toml and track files
         create_minimal_pyproject(tmp_path)
         tracked = TrackedFiles()
+        tracked.add(Path("models/__init__.py"))
         tracked.add(Path("models/test.py"))
+        tracked.add(Path("targets/__init__.py"))
         tracked.add(Path("targets/test.py"))
         tracked.add(Path("pyproject.toml"))
         save_tracked(tracked, ctx)
@@ -236,7 +239,9 @@ class TestPreflightCLIIntegration:
         # Create pyproject.toml and track files
         create_minimal_pyproject(tmp_path)
         tracked = TrackedFiles()
+        tracked.add(Path("models/__init__.py"))
         tracked.add(Path("models/test.py"))
+        tracked.add(Path("targets/__init__.py"))
         tracked.add(Path("targets/test.py"))
         tracked.add(Path("pyproject.toml"))
         save_tracked(tracked, ctx)

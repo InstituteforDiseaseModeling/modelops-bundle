@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import typer
 from rich.console import Console
@@ -156,11 +156,74 @@ def require_project_context() -> ProjectContext:
         raise typer.Exit(1)
 
 
+def _extract_package_dirs(root: Path, module_path: str) -> List[Path]:
+    """Extract package directories from module path like 'models.sir'.
+
+    Args:
+        root: Project root directory
+        module_path: Module path from entrypoint (e.g., 'models.sir')
+
+    Returns:
+        List of package directories (e.g., [root/models, root/models/sir])
+    """
+    parts = module_path.split('.')
+    dirs = []
+    for i in range(1, len(parts) + 1):
+        dir_path = root / Path(*parts[:i])
+        if dir_path.is_dir():
+            # Skip hidden/build directories
+            if any(p.startswith('.') or p in ('__pycache__', 'build', 'dist')
+                   for p in parts[:i]):
+                continue
+            dirs.append(dir_path)
+    return dirs
+
+
+def _find_required_init_files(ctx: ProjectContext, registry: "BundleRegistry") -> Dict[Path, Set[str]]:
+    """Find __init__.py files required by model/target entrypoints.
+
+    Args:
+        ctx: Project context
+        registry: Bundle registry
+
+    Returns:
+        Dict mapping init file paths to set of entities requiring them
+    """
+    needed: Dict[Path, Set[str]] = {}
+
+    # Check model entrypoints
+    for model_id, model in registry.models.items():
+        if ':' not in model.entrypoint:
+            continue
+
+        module_path = model.entrypoint.rsplit(':', 1)[0]
+        for parent_dir in _extract_package_dirs(ctx.root, module_path):
+            init_file = parent_dir / "__init__.py"
+            if init_file not in needed:
+                needed[init_file] = set()
+            needed[init_file].add(f"model '{model_id}'")
+
+    # Check target entrypoints
+    for target_id, target in registry.targets.items():
+        if ':' not in target.entrypoint:
+            continue
+
+        module_path = target.entrypoint.rsplit(':', 1)[0]
+        for parent_dir in _extract_package_dirs(ctx.root, module_path):
+            init_file = parent_dir / "__init__.py"
+            if init_file not in needed:
+                needed[init_file] = set()
+            needed[init_file].add(f"target '{target_id}'")
+
+    return needed
+
+
 def track_registry_dependencies(ctx: ProjectContext, registry: "BundleRegistry") -> None:
     """Auto-track all files referenced in the registry.
 
     This ensures all model files, data dependencies, code dependencies,
     target files, observation files, and the registry.yaml itself are tracked.
+    Also auto-tracks __init__.py files required for package imports.
     """
     from .ops import load_tracked, save_tracked
 
@@ -180,6 +243,43 @@ def track_registry_dependencies(ctx: ProjectContext, registry: "BundleRegistry")
     registry_path = ctx.storage_dir / "registry.yaml"
     registry_rel_path = ctx.to_project_relative(registry_path)
     tracked.add(registry_rel_path)
+
+    # Auto-track __init__.py files required by entrypoints
+    required_inits = _find_required_init_files(ctx, registry)
+    missing_inits = []
+    tracked_inits = []
+
+    for init_file, entities in required_inits.items():
+        if init_file.exists():
+            init_rel_path = ctx.to_project_relative(init_file)
+            if init_rel_path not in tracked.files:
+                tracked.add(init_rel_path)
+                tracked_inits.append(init_rel_path)
+        else:
+            # ERROR: Expected but missing
+            rel_dir = ctx.to_project_relative(init_file.parent)
+            missing_inits.append((rel_dir, sorted(entities)))
+
+    # Report auto-tracked __init__.py files
+    if tracked_inits:
+        console.print(f"[dim]✓ Auto-tracked {len(tracked_inits)} package file(s): {', '.join(str(f) for f in tracked_inits)}[/dim]")
+
+    # Error if any __init__.py files are missing
+    if missing_inits:
+        console.print("\n[red]✗ Error: Missing required __init__.py files[/red]\n")
+        console.print("The following directories are Python packages but missing __init__.py:\n")
+        for rel_dir, entities in missing_inits:
+            entities_str = ', '.join(entities[:3])
+            if len(entities) > 3:
+                entities_str += f", and {len(entities) - 3} more"
+            console.print(f"  • [cyan]{rel_dir}/[/cyan] (needed by {entities_str})")
+
+        console.print("\n[yellow]Python requires __init__.py to import from these directories.[/yellow]\n")
+        console.print("To fix, run:")
+        touch_cmd = "touch " + " ".join(f"{rel_dir}/__init__.py" for rel_dir, _ in missing_inits)
+        console.print(f"  [cyan]{touch_cmd}[/cyan]\n")
+        console.print("Then re-run: [cyan]modelops-bundle register-model[/cyan] or [cyan]register-target[/cyan]\n")
+        raise typer.Exit(1)
 
     # Save updated tracking
     save_tracked(tracked, ctx)
@@ -1711,9 +1811,33 @@ def dev_env():
 
 
 def _module_path_from_file(file_path: Path) -> str:
+    """Convert file path to Python module path.
+
+    Args:
+        file_path: Path to Python file (e.g., 'models/sir.py')
+
+    Returns:
+        Module path (e.g., 'models.sir')
+
+    Raises:
+        ValueError: If file is at root level (no package structure)
+    """
     module_path = str(file_path).replace("/", ".").replace("\\", ".")
     if module_path.endswith(".py"):
         module_path = module_path[:-3]
+
+    # Validate module path has at least one dot (is in a package)
+    if "." not in module_path:
+        raise ValueError(
+            f"Model file '{file_path}' must be inside a package directory.\n\n"
+            f"Files at the project root cannot be imported as Python modules.\n"
+            f"Move your model to a subdirectory, for example:\n"
+            f"  mkdir models\n"
+            f"  mv {file_path} models/\n"
+            f"  modelops-bundle register-model models/{file_path.name}\n\n"
+            f"This will create a valid import path like 'models.{module_path}:ClassName'"
+        )
+
     return module_path
 
 
@@ -1823,7 +1947,11 @@ def register_model(
         old_entries = {mid: m for mid, m in registry.models.items() if m.path == path}
         new_entries = {}
 
-        module_path = _module_path_from_file(path)
+        try:
+            module_path = _module_path_from_file(path)
+        except ValueError as e:
+            console.print(f"[red]✗ Error:[/red] {e}")
+            raise typer.Exit(1)
         outputs_by_class = {}
         try:
             outputs_by_class = discover_model_outputs(path)

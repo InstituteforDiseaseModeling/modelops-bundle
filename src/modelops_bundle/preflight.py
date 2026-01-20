@@ -635,13 +635,19 @@ class PreflightValidator:
                     needed_dirs[dir_path] = set()
                 needed_dirs[dir_path].add(f"target '{target_id}'")
 
+        # Load tracked files to check if __init__.py is tracked
+        from .ops import load_tracked
+        tracked = load_tracked(self.ctx)
+
         # Check each directory for __init__.py
         for dir_path, entities in needed_dirs.items():
             init_file = dir_path / "__init__.py"
-            if not init_file.exists():
-                rel_dir = self.ctx.to_project_relative(dir_path)
-                entities_list = sorted(entities)
+            rel_dir = self.ctx.to_project_relative(dir_path)
+            init_rel_path = self.ctx.to_project_relative(init_file)
+            entities_list = sorted(entities)
 
+            if not init_file.exists():
+                # WARNING: File doesn't exist on disk
                 issues.append(ValidationIssue(
                     severity=CheckSeverity.WARNING,
                     category="missing_init_file",
@@ -649,6 +655,16 @@ class PreflightValidator:
                     entity_id=None,
                     message=f"Directory '{rel_dir}' is a Python package but missing __init__.py (needed by {', '.join(entities_list[:3])})",
                     suggestion=f"Create the file: touch {rel_dir}/__init__.py"
+                ))
+            elif init_rel_path.as_posix() not in tracked.files:
+                # ERROR: File exists but not tracked (safety net - registration should prevent this)
+                issues.append(ValidationIssue(
+                    severity=CheckSeverity.ERROR,
+                    category="untracked_init_file",
+                    entity_type="registry",
+                    entity_id=None,
+                    message=f"File '{init_rel_path}' exists but is not tracked in bundle (needed by {', '.join(entities_list[:3])})",
+                    suggestion=f"Re-run 'modelops-bundle register-model' or 'register-target' to auto-track it"
                 ))
 
         return issues

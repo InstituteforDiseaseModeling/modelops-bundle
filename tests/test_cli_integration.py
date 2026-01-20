@@ -159,6 +159,10 @@ def test_register_model_and_target_list_output(runner, isolated_home, test_env_f
         Path("targets").mkdir()
         Path("data").mkdir()
 
+        # Create __init__.py files for package imports
+        Path("models/__init__.py").write_text("")
+        Path("targets/__init__.py").write_text("")
+
         Path("models/model.py").write_text(
             "class Foo(BaseModel):\n"
             "    pass\n"
