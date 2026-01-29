@@ -421,13 +421,16 @@ def test_full_workflow_with_cli_commands(sample_project, registry_ref, monkeypat
     result = run_cli("init", "--env", "local")
     assert result.returncode == 0
 
-    # For CLI testing we copy the model to project root so entrypoints like
-    # "model:StochasticSIR" resolve to model.py (register-model strips src/)
-    root_model_path = sample_project / "model.py"
-    root_model_path.write_text((sample_project / "src" / "model.py").read_text())
+    # For CLI testing we copy the model to a models/ subdirectory so it can be
+    # imported as a Python module. Models at project root are rejected.
+    models_dir = sample_project / "models"
+    models_dir.mkdir(exist_ok=True)
+    (models_dir / "__init__.py").write_text("")  # Make it a package
+    model_path = models_dir / "model.py"
+    model_path.write_text((sample_project / "src" / "model.py").read_text())
 
     # Add files
-    result = run_cli("add", "model.py", "data/data.csv", "pyproject.toml")
+    result = run_cli("add", "models/model.py", "data/data.csv", "pyproject.toml")
     assert result.returncode == 0
 
     # Check status
@@ -438,7 +441,7 @@ def test_full_workflow_with_cli_commands(sample_project, registry_ref, monkeypat
     # Register at least one model so push has a registry to work with
     result = run_cli(
         "register-model",
-        "model.py",
+        "models/model.py",
         "--class",
         "StochasticSIR",
     )
