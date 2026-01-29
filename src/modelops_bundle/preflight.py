@@ -303,6 +303,18 @@ class PreflightValidator:
 
             module_path, class_name = model.entrypoint.rsplit(':', 1)
 
+            # Step 0: Check module path is inside a package (not at project root)
+            if '.' not in module_path:
+                issues.append(ValidationIssue(
+                    severity=CheckSeverity.ERROR,
+                    category="invalid_module_path",
+                    entity_type="model",
+                    entity_id=model_id,
+                    message=f"Model file must be inside a package directory, not at project root",
+                    suggestion=f"Move your model to a subdirectory, e.g.: mkdir models && mv {module_path}.py models/"
+                ))
+                continue
+
             # Step 1: Check file exists
             file_path = self._module_to_file(module_path)
             if not file_path:
@@ -365,6 +377,18 @@ class PreflightValidator:
                 continue
 
             module_path, function_name = target.entrypoint.rsplit(':', 1)
+
+            # Step 0: Check module path is inside a package (not at project root)
+            if '.' not in module_path:
+                issues.append(ValidationIssue(
+                    severity=CheckSeverity.ERROR,
+                    category="invalid_module_path",
+                    entity_type="target",
+                    entity_id=target_id,
+                    message=f"Target file must be inside a package directory, not at project root",
+                    suggestion=f"Move your target to a subdirectory, e.g.: mkdir targets && mv {module_path}.py targets/"
+                ))
+                continue
 
             # Step 1: Check file exists
             file_path = self._module_to_file(module_path)

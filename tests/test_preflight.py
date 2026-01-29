@@ -467,6 +467,79 @@ class TestPreflightValidator:
         assert issues[0].category == "invalid_entrypoint"
         assert "module.path:function_name" in issues[0].suggestion
 
+    def test_check_entrypoints_root_level_model(self, tmp_path, monkeypatch):
+        """Test that root-level model file (no package) is detected.
+
+        Files at project root cannot be properly imported as Python modules
+        because they produce module paths without dots (e.g., 'model:MyClass'
+        instead of 'models.model:MyClass').
+        """
+        monkeypatch.chdir(tmp_path)
+        ctx = ProjectContext.init()
+
+        # Create file at project root
+        (tmp_path / "model.py").write_text("class TestModel:\n    pass\n")
+
+        registry = BundleRegistry(
+            version="1.0",
+            models={
+                "model1": ModelEntry(
+                    entrypoint="model:TestModel",  # Root-level, no dot!
+                    path="model.py",
+                    class_name="TestModel",
+                    scenarios=[],
+                    parameters=[],
+                    outputs=["incidence"],
+                    data=[],
+                    data_digests={},
+                    code=[],
+                    code_digests={},
+                    model_digest="sha256:abc123",
+                )
+            },
+            targets={},
+        )
+
+        validator = PreflightValidator(ctx, registry)
+        issues = validator._check_entrypoints()
+
+        assert len(issues) == 1
+        assert issues[0].severity == CheckSeverity.ERROR
+        assert issues[0].category == "invalid_module_path"
+        assert "package directory" in issues[0].message
+        assert "mkdir models" in issues[0].suggestion
+
+    def test_check_entrypoints_root_level_target(self, tmp_path, monkeypatch):
+        """Test that root-level target file (no package) is detected."""
+        monkeypatch.chdir(tmp_path)
+        ctx = ProjectContext.init()
+
+        # Create file at project root
+        (tmp_path / "target.py").write_text("def target_fn(data_paths):\n    pass\n")
+
+        registry = BundleRegistry(
+            version="1.0",
+            models={},
+            targets={
+                "target1": TargetEntry(
+                    path="target.py",
+                    entrypoint="target:target_fn",  # Root-level, no dot!
+                    model_output="incidence",
+                    data=[],
+                    target_digest=None,
+                )
+            },
+        )
+
+        validator = PreflightValidator(ctx, registry)
+        issues = validator._check_entrypoints()
+
+        assert len(issues) == 1
+        assert issues[0].severity == CheckSeverity.ERROR
+        assert issues[0].category == "invalid_module_path"
+        assert "package directory" in issues[0].message
+        assert "mkdir targets" in issues[0].suggestion
+
     def test_check_empty_outputs(self, tmp_path, monkeypatch):
         """Test that models with no outputs generate warning."""
         monkeypatch.chdir(tmp_path)
